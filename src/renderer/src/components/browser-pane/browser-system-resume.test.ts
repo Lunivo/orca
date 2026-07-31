@@ -34,3 +34,27 @@ it('shares one system resume IPC listener across browser pages and releases it',
   unsubscribeSecond()
   expect(unsubscribeIpc).toHaveBeenCalledOnce()
 })
+
+it('continues dispatching when a system resume listener throws', async () => {
+  let dispatchResume: (() => void) | undefined
+  onSystemResumed.mockImplementation((listener: () => void) => {
+    dispatchResume = listener
+    return vi.fn()
+  })
+  const { subscribeBrowserSystemResume } = await import('./browser-system-resume')
+  const listenerError = new Error('pane failed')
+  const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+  const second = vi.fn()
+
+  subscribeBrowserSystemResume(() => {
+    throw listenerError
+  })
+  subscribeBrowserSystemResume(second)
+  dispatchResume?.()
+
+  expect(consoleError).toHaveBeenCalledWith(
+    '[browser] system resume listener failed:',
+    listenerError
+  )
+  expect(second).toHaveBeenCalledOnce()
+})

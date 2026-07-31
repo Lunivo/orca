@@ -81,6 +81,10 @@ type BrowserTabPageState = {
   loadError?: BrowserLoadError | null
 }
 
+type SetBrowserPageUrlOptions = {
+  preserveLoadError?: boolean
+}
+
 type ClosedBrowserWorkspaceSnapshot = {
   workspace: BrowserWorkspace
   pages: BrowserPage[]
@@ -150,7 +154,7 @@ export type BrowserSlice = {
     failure: BrowserCertificateFailure | null
   ) => void
   setBrowserTabUrl: (pageId: string, url: string) => void
-  setBrowserPageUrl: (pageId: string, url: string) => void
+  setBrowserPageUrl: (pageId: string, url: string, options?: SetBrowserPageUrlOptions) => void
   setRemoteBrowserPageHandle: (pageId: string, handle: RemoteBrowserPageHandle) => void
   removeRemoteBrowserPageHandle: (
     pageId: string,
@@ -1436,7 +1440,7 @@ export const createBrowserSlice: StateCreator<AppState, [], [], BrowserSlice> = 
 
   setBrowserTabUrl: (pageId, url) => get().setBrowserPageUrl(pageId, url),
 
-  setBrowserPageUrl: (pageId, url) => {
+  setBrowserPageUrl: (pageId, url, options) => {
     const nextUrl = normalizeUrl(url)
     if (nextUrl !== 'about:blank' && nextUrl !== ORCA_BROWSER_BLANK_URL) {
       const currentPage = findPage(get().browserPagesByWorkspace, pageId)
@@ -1462,7 +1466,7 @@ export const createBrowserSlice: StateCreator<AppState, [], [], BrowserSlice> = 
               url: nextUrl,
               title: normalizeBrowserTitle(entry.title, nextUrl),
               loading: true,
-              loadError: null
+              loadError: options?.preserveLoadError ? entry.loadError : null
             }
           : entry
       )

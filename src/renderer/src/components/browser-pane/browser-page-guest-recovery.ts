@@ -19,7 +19,7 @@ type BrowserPageGuestRecoveryOptions = {
 
 export type BrowserPageGuestRecovery = {
   dispose: () => void
-  finish: () => void
+  finish: () => boolean
   recoverRenderer: () => void
   retryRecovery: () => void
   validateAfterResume: () => void
@@ -30,7 +30,7 @@ export function createBrowserPageGuestRecovery(
 ): BrowserPageGuestRecovery {
   let recoveryTimer: number | null = null
   let disposed = false
-  let recoveryStarted = false
+  let recoveryStarted = options.isPending()
   let replacementRequested = false
   let validationInFlight = false
   let validationFailureCount = 0
@@ -49,10 +49,12 @@ export function createBrowserPageGuestRecovery(
       validationRetryTimer = null
     }
   }
-  const finish = (): void => {
+  const finish = (): boolean => {
+    const completedRecovery = recoveryStarted
     recoveryStarted = false
     options.setPending(false)
     clearRecoveryTimer()
+    return completedRecovery
   }
   const showRecoveryFailure = (): void => {
     if (disposed || !options.browserPageExists()) {

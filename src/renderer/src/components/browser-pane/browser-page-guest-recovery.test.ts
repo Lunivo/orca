@@ -74,6 +74,17 @@ describe('browser page guest recovery', () => {
     expect(state.onRecoveryFailed).not.toHaveBeenCalled()
   })
 
+  it('reports whether document readiness completed a recovery cycle', () => {
+    const normal = createRecovery()
+    const resumed = createRecovery({ pending: true })
+
+    expect(normal.recovery.finish()).toBe(false)
+    expect(resumed.recovery.finish()).toBe(true)
+
+    normal.recovery.recoverRenderer()
+    expect(normal.recovery.finish()).toBe(true)
+  })
+
   it('recreates a guest when in-place reload is unavailable', async () => {
     const state = createRecovery({
       reload: () => {
@@ -147,7 +158,10 @@ describe('browser page guest recovery', () => {
     expect(state.validateRegistration).toHaveBeenCalledOnce()
 
     resolveValidation?.(true)
-    await vi.waitFor(() => expect(state.pending()).toBe(false))
+    await vi.waitFor(() => {
+      state.recovery.validateAfterResume()
+      expect(state.validateRegistration).toHaveBeenCalledTimes(2)
+    })
   })
 
   it('does not validate while renderer recovery is pending', async () => {

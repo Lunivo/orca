@@ -203,6 +203,12 @@ type BrowserTabPageState = Partial<
   >
 >
 
+type BrowserPageUrlSetter = (
+  tabId: string,
+  url: string,
+  options?: { preserveLoadError?: boolean }
+) => void
+
 type BrowserDownloadState = Omit<BrowserDownloadRequestedEvent, 'status' | 'savePath'> & {
   receivedBytes: number
   status: 'downloading' | 'completed' | 'failed' | 'canceled'
@@ -910,7 +916,7 @@ function RemoteBrowserPagePane({
   worktreeId: string
   isActive: boolean
   onUpdatePageState: (tabId: string, updates: BrowserTabPageState) => void
-  onSetUrl: (tabId: string, url: string) => void
+  onSetUrl: BrowserPageUrlSetter
 }): React.JSX.Element {
   const activeRuntimeEnvironmentId = runtimeEnvironmentId
   const addressBarInputRef = useRef<HTMLInputElement | null>(null)
@@ -2801,7 +2807,7 @@ function BrowserPagePane({
   isMobileDriven: boolean
   inputLocked: boolean
   onUpdatePageState: (tabId: string, updates: BrowserTabPageState) => void
-  onSetUrl: (tabId: string, url: string) => void
+  onSetUrl: BrowserPageUrlSetter
 }): React.JSX.Element {
   const isPaintable = isBrowserPagePanePaintable({
     isActive,
@@ -2877,6 +2883,11 @@ function BrowserPagePane({
   const initialBrowserUrlRef = useRef(browserTab.url)
   const browserTabUrlRef = useRef(browserTab.url)
   const activeLoadFailureRef = useRef<BrowserLoadError | null>(browserTab.loadError)
+  const recoveryNavigationValidationRef = useRef<{
+    committed: boolean
+    started: boolean
+    targetUrl: string
+  } | null>(null)
   // Why: CDP viewport emulation doesn't survive renderer process swaps, so reapply the preset from this ref on every dom-ready.
   const viewportPresetIdRef = useRef(browserTab.viewportPresetId ?? null)
   viewportPresetIdRef.current = browserTab.viewportPresetId ?? null
@@ -3853,24 +3864,33 @@ function BrowserPagePane({
     }
 
     const handleDomReady = (): void => {
+      const validateRecoveryAfterNavigation =
+        recoveryNavigationValidationRef.current?.committed === true
+      if (validateRecoveryAfterNavigation) {
+        recoveryNavigationValidationRef.current = null
+      }
+      let liveWebContentsId: number | null = null
+      try {
+        liveWebContentsId = webview.getWebContentsId()
+      } catch {
+        // Why: the guest can detach between dom-ready and registration.
+      }
       const queuedAnnotationViewportBridgeSync =
-        registeredWebContentsIds.get(browserTab.id) !== webview.getWebContentsId()
+        liveWebContentsId === null ||
+        registeredWebContentsIds.get(browserTab.id) !== liveWebContentsId
       if (queuedAnnotationViewportBridgeSync) {
         void registerGuest().then((registered) => {
           if (registered) {
             clearGuestRecoveryError()
-            if (guestRecoveryPendingRef.current) {
-              guestRecovery.finish()
-            }
+            guestRecovery.finish()
+          } else {
+            guestRecovery.recoverRenderer()
           }
           syncBrowserAnnotationViewportBridge()
         })
       } else {
-        const recoveryWasPending = guestRecoveryPendingRef.current
-        const recoveryErrorVisible =
-          activeLoadFailureRef.current?.code === BROWSER_GUEST_RECOVERY_ERROR_CODE
-        guestRecovery.finish()
-        if (recoveryWasPending || recoveryErrorVisible) {
+        const completedRecovery = guestRecovery.finish()
+        if (completedRecovery || validateRecoveryAfterNavigation) {
           guestRecovery.validateAfterResume()
         }
       }
@@ -3992,7 +4012,23 @@ function BrowserPagePane({
       })
     }
 
-    const handleDidNavigate = (event: { url?: string; isMainFrame?: boolean }): void => {
+    const handleDidStartNavigation = (event: Electron.DidStartNavigationEvent): void => {
+      if (!event.isMainFrame || event.isInPlace || !event.url) {
+        return
+      }
+      const pendingRecoveryNavigation = recoveryNavigationValidationRef.current
+      const browserStartedUrl = redactKagiSessionToken(event.url)
+      const startedUrl = normalizeBrowserNavigationUrl(browserStartedUrl) ?? browserStartedUrl
+      if (pendingRecoveryNavigation?.targetUrl === startedUrl) {
+        pendingRecoveryNavigation.started = true
+      }
+    }
+
+    const handleDidNavigate = (
+      event: { url?: string; isMainFrame?: boolean },
+      persistUrl = true,
+      preserveLoadError = false
+    ): void => {
       if (event.isMainFrame === false) {
         return
       }
@@ -4001,19 +4037,38 @@ function BrowserPagePane({
         return
       }
       const browserModelUrl = redactKagiSessionToken(currentUrl)
-      lastKnownWebviewUrlRef.current =
+      const normalizedBrowserModelUrl =
         normalizeBrowserNavigationUrl(browserModelUrl) ?? browserModelUrl
+      lastKnownWebviewUrlRef.current = normalizedBrowserModelUrl
       rememberLiveBrowserUrl(browserTab.id, browserModelUrl)
       // Why: don't overwrite in-progress typing (see above).
       if (document.activeElement !== addressBarInputRef.current) {
         setAddressBarValue(toDisplayUrl(browserModelUrl))
       }
-      onSetUrlRef.current(browserTab.id, browserModelUrl)
+      if (persistUrl) {
+        onSetUrlRef.current(browserTab.id, browserModelUrl, { preserveLoadError })
+      }
       onUpdatePageStateRef.current(browserTab.id, {
         title: webview.getTitle() || browserModelUrl,
         canGoBack: webview.canGoBack(),
         canGoForward: webview.canGoForward()
       })
+    }
+
+    const handleFullDidNavigate = (event: { url?: string; isMainFrame?: boolean }): void => {
+      const pendingRecoveryNavigation = recoveryNavigationValidationRef.current
+      if (event.isMainFrame !== false && pendingRecoveryNavigation?.started) {
+        pendingRecoveryNavigation.committed = true
+      }
+      const preserveRecoveryError =
+        activeLoadFailureRef.current?.code === BROWSER_GUEST_RECOVERY_ERROR_CODE
+      handleDidNavigate(event, true, preserveRecoveryError)
+    }
+
+    const handleDidNavigateInPage = (event: { url?: string; isMainFrame?: boolean }): void => {
+      const preserveRecoveryError =
+        activeLoadFailureRef.current?.code === BROWSER_GUEST_RECOVERY_ERROR_CODE
+      handleDidNavigate(event, !preserveRecoveryError)
     }
 
     const handleTitleUpdate = (event: { title?: string }): void => {
@@ -4054,6 +4109,10 @@ function BrowserPagePane({
         return
       }
       trackNextLoadingEventRef.current = false
+      const pendingRecoveryNavigation = recoveryNavigationValidationRef.current
+      if (pendingRecoveryNavigation?.started) {
+        recoveryNavigationValidationRef.current = null
+      }
       const loadError = buildLoadError(event)
       activeLoadFailureRef.current = loadError
       onUpdatePageStateRef.current(browserTab.id, {
@@ -4097,15 +4156,16 @@ function BrowserPagePane({
     webview.addEventListener('render-process-gone', guestRecovery.recoverRenderer)
     webview.addEventListener('focus', dismissAddressBarSuggestions)
     webview.addEventListener('did-start-loading', handleDidStartLoading)
+    webview.addEventListener('did-start-navigation', handleDidStartNavigation)
     webview.addEventListener('did-stop-loading', handleDidStopLoading)
     // Why: close find only on full 'did-navigate', not the shared handler, which also fires on SPA in-page hash/pushState changes.
     const handleFindCloseOnNavigate = (): void => {
       setFindOpen(false)
     }
 
-    webview.addEventListener('did-navigate', handleDidNavigate)
+    webview.addEventListener('did-navigate', handleFullDidNavigate)
     webview.addEventListener('did-navigate', handleFindCloseOnNavigate)
-    webview.addEventListener('did-navigate-in-page', handleDidNavigate)
+    webview.addEventListener('did-navigate-in-page', handleDidNavigateInPage)
     webview.addEventListener('page-title-updated', handleTitleUpdate)
     webview.addEventListener('page-favicon-updated', handleFaviconUpdate)
     webview.addEventListener('did-fail-load', handleFailLoad)
@@ -4132,10 +4192,11 @@ function BrowserPagePane({
       webview.removeEventListener('render-process-gone', guestRecovery.recoverRenderer)
       webview.removeEventListener('focus', dismissAddressBarSuggestions)
       webview.removeEventListener('did-start-loading', handleDidStartLoading)
+      webview.removeEventListener('did-start-navigation', handleDidStartNavigation)
       webview.removeEventListener('did-stop-loading', handleDidStopLoading)
-      webview.removeEventListener('did-navigate', handleDidNavigate)
+      webview.removeEventListener('did-navigate', handleFullDidNavigate)
       webview.removeEventListener('did-navigate', handleFindCloseOnNavigate)
-      webview.removeEventListener('did-navigate-in-page', handleDidNavigate)
+      webview.removeEventListener('did-navigate-in-page', handleDidNavigateInPage)
       webview.removeEventListener('page-title-updated', handleTitleUpdate)
       webview.removeEventListener('page-favicon-updated', handleFaviconUpdate)
       webview.removeEventListener('did-fail-load', handleFailLoad)
@@ -4665,6 +4726,8 @@ function BrowserPagePane({
     (url: string): void => {
       const navigateBrowserUrl = (targetUrl: string): void => {
         const browserModelUrl = redactKagiSessionToken(targetUrl)
+        const normalizedBrowserModelUrl =
+          normalizeBrowserNavigationUrl(browserModelUrl) ?? browserModelUrl
         const recoveryLoadError =
           activeLoadFailureRef.current?.code === BROWSER_GUEST_RECOVERY_ERROR_CODE
             ? activeLoadFailureRef.current
@@ -4683,8 +4746,10 @@ function BrowserPagePane({
           return
         }
         trackNextLoadingEventRef.current = targetUrl !== ORCA_BROWSER_BLANK_URL
-        lastKnownWebviewUrlRef.current =
-          normalizeBrowserNavigationUrl(browserModelUrl) ?? browserModelUrl
+        lastKnownWebviewUrlRef.current = normalizedBrowserModelUrl
+        recoveryNavigationValidationRef.current = recoveryLoadError
+          ? { committed: false, started: false, targetUrl: normalizedBrowserModelUrl }
+          : null
         webview.src = targetUrl
         if (targetUrl !== ORCA_BROWSER_BLANK_URL) {
           focusWebviewNow()

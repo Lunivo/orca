@@ -3,7 +3,11 @@ let unsubscribeSystemResumed: (() => void) | null = null
 
 function dispatchBrowserSystemResume(): void {
   for (const listener of resumeListeners) {
-    listener()
+    try {
+      listener()
+    } catch (error) {
+      console.error('[browser] system resume listener failed:', error)
+    }
   }
 }
 
