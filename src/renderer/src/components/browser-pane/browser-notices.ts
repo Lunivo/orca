@@ -6,6 +6,7 @@ import type {
 import type { BrowserLoadError } from '../../../../shared/types'
 import { isChromiumCertificateErrorCode } from '../../../../shared/browser-certificate-errors'
 import { translate } from '@/i18n/i18n'
+import { BROWSER_GUEST_RECOVERY_ERROR_CODE } from './browser-page-guest-recovery'
 
 export type LoadFailureMeta = {
   host: string | null
@@ -74,6 +75,9 @@ export function formatLoadFailureDescription(
 ): string {
   if (!loadError) {
     return 'The page did not respond.'
+  }
+  if (loadError.code === BROWSER_GUEST_RECOVERY_ERROR_CODE) {
+    return loadError.description
   }
   if (isChromiumCertificateErrorCode(loadError.code)) {
     const host = meta.host ?? 'this address'

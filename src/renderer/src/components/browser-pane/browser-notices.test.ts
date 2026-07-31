@@ -8,6 +8,7 @@ import {
   formatPopupNotice,
   isCertificateLoadError
 } from './browser-notices'
+import { BROWSER_GUEST_RECOVERY_ERROR_CODE } from './browser-page-guest-recovery'
 
 describe('browser notice formatting', () => {
   it('formats denied permissions with safe copy', () => {
@@ -114,6 +115,19 @@ describe('browser notice formatting', () => {
         isLocalhostLike: false
       })
     ).toBeNull()
+  })
+
+  it('preserves the explicit guest recovery failure copy', () => {
+    expect(
+      formatLoadFailureDescription(
+        {
+          code: BROWSER_GUEST_RECOVERY_ERROR_CODE,
+          description: 'The browser page stopped unexpectedly. Retry to restore it.',
+          validatedUrl: 'https://example.com'
+        },
+        { host: 'example.com', isLocalhostLike: false }
+      )
+    ).toBe('The browser page stopped unexpectedly. Retry to restore it.')
   })
 
   it('formats certificate failures without local-server recovery advice', () => {

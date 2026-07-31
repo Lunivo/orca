@@ -4,10 +4,17 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { ElectronApplication, Page } from '@stablyai/playwright-test'
 import { expect, test } from './helpers/orca-app'
-import { ensureTerminalVisible, getActiveWorktreeId, waitForActiveWorktree } from './helpers/store'
+import {
+  ensureTerminalVisible,
+  getActiveWorktreeId,
+  switchToOtherWorktree,
+  switchToWorktree,
+  waitForActiveWorktree
+} from './helpers/store'
 
 type BrowserGuestState = {
   chromePresent: boolean
+  formValue: string | null
   marker: string | null
   url: string | null
   webContentsId: number | null
@@ -45,7 +52,7 @@ async function createBrowserFixture(
   const fixturePath = path.join(fixtureDir, 'recovery.html')
   writeFileSync(
     fixturePath,
-    '<!doctype html><html><head><title>Recovery fixture</title></head><body style="background:#fff"><h1 id="recovery-marker">painted-file-guest</h1></body></html>'
+    '<!doctype html><html><head><title>Recovery fixture</title></head><body style="background:#fff"><h1 id="recovery-marker">painted-file-guest</h1><input id="recovery-state"></body></html>'
   )
   const fixtureUrl = pathToFileURL(fixturePath).href
   await waitForActiveWorktree(page)
@@ -78,19 +85,55 @@ async function readBrowserGuestState(page: Page, browserTabId: string): Promise<
     const overlay = document.querySelector(`[data-browser-overlay-tab-id="${targetBrowserTabId}"]`)
     const webview = overlay?.querySelector('webview') as Electron.WebviewTag | null
     if (!webview) {
-      return { chromePresent, marker: null, url: null, webContentsId: null }
+      return {
+        chromePresent,
+        formValue: null,
+        marker: null,
+        url: null,
+        webContentsId: null
+      }
     }
     try {
       const webContentsId = webview.getWebContentsId()
       const guest = (await webview.executeJavaScript(`({
+        formValue: document.querySelector('#recovery-state')?.value ?? null,
         marker: document.querySelector('#recovery-marker')?.textContent ?? null,
         url: location.href
-      })`)) as { marker: string | null; url: string }
-      return { chromePresent, marker: guest.marker, url: guest.url, webContentsId }
+      })`)) as { formValue: string | null; marker: string | null; url: string }
+      return { chromePresent, ...guest, webContentsId }
     } catch {
-      return { chromePresent, marker: null, url: null, webContentsId: null }
+      return {
+        chromePresent,
+        formValue: null,
+        marker: null,
+        url: null,
+        webContentsId: null
+      }
     }
   }, browserTabId)
+}
+
+async function isBrowserPagePaneMounted(page: Page, browserPageId: string): Promise<boolean> {
+  return page.evaluate(
+    (targetBrowserPageId) =>
+      Boolean(document.querySelector(`[data-browser-page-pane-id="${targetBrowserPageId}"]`)),
+    browserPageId
+  )
+}
+
+async function setGuestFormValue(page: Page, browserTabId: string, value: string): Promise<void> {
+  await page.evaluate(
+    async ({ targetBrowserTabId, targetValue }) => {
+      const overlay = document.querySelector(
+        `[data-browser-overlay-tab-id="${targetBrowserTabId}"]`
+      )
+      const webview = overlay?.querySelector('webview') as Electron.WebviewTag
+      await webview.executeJavaScript(
+        `document.querySelector('#recovery-state').value = ${JSON.stringify(targetValue)}`
+      )
+    },
+    { targetBrowserTabId: browserTabId, targetValue: value }
+  )
 }
 
 async function listRegisteredBrowserPages(
@@ -172,6 +215,7 @@ test('browser chrome recovers a live registered file guest after renderer loss',
       result: { tabs: [{ browserPageId: browserTab.activePageId, url: fixtureUrl }] }
     })
 
+  await setGuestFormValue(orcaPage, browserTab.id, 'unsaved-form-state')
   const backgroundTab = await orcaPage.evaluate(
     ({ targetWorktreeId }) =>
       window.__store?.getState().createBrowserTab(targetWorktreeId, 'about:blank', {
@@ -211,7 +255,8 @@ test('browser chrome recovers a live registered file guest after renderer loss',
     .poll(() => readBrowserGuestState(orcaPage, browserTab.id), { timeout: 10_000 })
     .toMatchObject({ chromePresent: true, marker: 'painted-file-guest', url: fixtureUrl })
   const resumeRecovered = await readBrowserGuestState(orcaPage, browserTab.id)
-  expect(resumeRecovered.webContentsId).not.toBe(recovered.webContentsId)
+  expect(resumeRecovered.webContentsId).toBe(recovered.webContentsId)
+  expect(resumeRecovered.formValue).toBe('unsaved-form-state')
   await expect
     .poll(async () =>
       (await listRegisteredBrowserPages(orcaPage, worktreeId)).result?.tabs?.find(
@@ -246,6 +291,27 @@ test('browser chrome recovers a live registered file guest after renderer loss',
   await expect
     .poll(() => readBrowserGuestState(orcaPage, browserTab.id), { timeout: 10_000 })
     .toMatchObject({ chromePresent: true, marker: 'painted-file-guest', url: fixtureUrl })
+
+  const parkedBefore = await readBrowserGuestState(orcaPage, browserTab.id)
+  const parkedProcessId = await readGuestProcessId(electronApp, parkedBefore.webContentsId!)
+  await expect.poll(() => isBrowserPagePaneMounted(orcaPage, browserTab.activePageId)).toBe(true)
+  const otherWorktreeId = await switchToOtherWorktree(orcaPage, worktreeId)
+  expect(otherWorktreeId).not.toBeNull()
+  await expect.poll(() => isBrowserPagePaneMounted(orcaPage, browserTab.activePageId)).toBe(false)
+  await crashGuestRenderer(electronApp, parkedBefore.webContentsId!)
+  await switchToWorktree(orcaPage, worktreeId)
+  await orcaPage.evaluate((targetBrowserTabId) => {
+    window.__store?.getState().setActiveBrowserTab(targetBrowserTabId)
+  }, browserTab.id)
+  await expect.poll(() => isBrowserPagePaneMounted(orcaPage, browserTab.activePageId)).toBe(true)
+  await expect
+    .poll(() => readBrowserGuestState(orcaPage, browserTab.id), { timeout: 10_000 })
+    .toMatchObject({ chromePresent: true, marker: 'painted-file-guest', url: fixtureUrl })
+  const parkedRecovered = await readBrowserGuestState(orcaPage, browserTab.id)
+  expect(parkedRecovered.webContentsId).toBe(parkedBefore.webContentsId)
+  await expect
+    .poll(() => readGuestProcessId(electronApp, parkedRecovered.webContentsId!))
+    .not.toBe(parkedProcessId)
 })
 
 test('minimized browser guest stays painted and registered after restore @headful', async ({

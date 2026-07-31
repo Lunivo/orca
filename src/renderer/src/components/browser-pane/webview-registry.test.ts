@@ -7,13 +7,13 @@ type ListenerRecord = {
 }
 
 function createWebview(overrides: Partial<Electron.WebviewTag> = {}): Electron.WebviewTag {
-  return {
+  return Object.assign(new EventTarget(), {
     style: {},
     blur: vi.fn(),
     remove: vi.fn(),
     contains: vi.fn(() => false),
     ...overrides
-  } as unknown as Electron.WebviewTag
+  }) as unknown as Electron.WebviewTag
 }
 
 describe('webview registry drag listeners', () => {
@@ -136,6 +136,42 @@ describe('webview registry drag listeners', () => {
       browserWebviewCount: 2,
       registeredBrowserGuestCount: 1
     })
+  })
+
+  it('retains renderer loss across pane unmount until the persistent guest is ready', async () => {
+    const {
+      isBrowserPageRendererRecoveryPending,
+      registerPersistentWebview,
+      unregisterPersistentWebview
+    } = await import('./webview-registry')
+    const webview = createWebview()
+    registerPersistentWebview('page-1', webview)
+
+    webview.dispatchEvent(new Event('render-process-gone'))
+    expect(isBrowserPageRendererRecoveryPending('page-1')).toBe(true)
+
+    webview.dispatchEvent(new Event('dom-ready'))
+    expect(isBrowserPageRendererRecoveryPending('page-1')).toBe(false)
+
+    webview.dispatchEvent(new Event('render-process-gone'))
+    unregisterPersistentWebview('page-1')
+    expect(isBrowserPageRendererRecoveryPending('page-1')).toBe(false)
+  })
+
+  it('preserves explicit page zoom only when replacing a failed guest', async () => {
+    const { destroyPersistentWebview, registerPersistentWebview, replacePersistentWebview } =
+      await import('./webview-registry')
+    const { getExplicitBrowserPageZoomLevel, rememberExplicitBrowserPageZoomLevel } =
+      await import('./browser-page-zoom')
+
+    registerPersistentWebview('page-1', createWebview())
+    rememberExplicitBrowserPageZoomLevel('page-1', 1.5)
+    await replacePersistentWebview('page-1')
+    expect(getExplicitBrowserPageZoomLevel('page-1')).toBe(1.5)
+
+    registerPersistentWebview('page-1', createWebview())
+    await destroyPersistentWebview('page-1')
+    expect(getExplicitBrowserPageZoomLevel('page-1')).toBeNull()
   })
 
   it('keeps webviews in passthrough until every renderer drag releases', async () => {

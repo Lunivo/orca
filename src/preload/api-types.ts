@@ -551,6 +551,14 @@ export type BrowserApi = {
     sessionProfileId?: string | null
     webContentsId: number
   }) => Promise<boolean>
+  isGuestRegistered: (args: { browserPageId: string; webContentsId: number }) => Promise<boolean>
+  repairGuestRegistration: (args: {
+    browserPageId: string
+    workspaceId: string
+    worktreeId: string
+    sessionProfileId?: string | null
+    webContentsId: number
+  }) => Promise<boolean>
   unregisterGuest: (args: { browserPageId: string }) => Promise<void>
   openDevTools: (args: { browserPageId: string }) => Promise<boolean>
   setViewportOverride: (args: {
