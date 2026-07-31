@@ -2828,6 +2828,7 @@ function BrowserPagePane({
   const [guestRecoveryGeneration, setGuestRecoveryGeneration] = useState(0)
   const guestRecoveryPendingRef = useRef(false)
   const validateVisibleGuestRegistrationRef = useRef<() => void>(() => {})
+  const retryGuestRecoveryRef = useRef<() => void>(() => {})
   const wasPaintableForGuestValidationRef = useRef(isPaintable)
   useLayoutEffect(() => {
     if (getBrowserOverlaySlotViewport(workspaceId)) {
@@ -2939,7 +2940,9 @@ function BrowserPagePane({
   const isActiveRef = useRef(isActive)
   isActiveRef.current = isActive
   const isPaintableRef = useRef(isPaintable)
-  isPaintableRef.current = isPaintable
+  useLayoutEffect(() => {
+    isPaintableRef.current = isPaintable
+  }, [isPaintable])
   const annotationViewportBridgeTokenRef = useRef(createBrowserUuid().replaceAll('-', ''))
   const browserAnnotations = useAppStore(
     (s) => s.browserAnnotationsByPageId[browserTab.id] ?? EMPTY_BROWSER_ANNOTATIONS
@@ -3781,6 +3784,14 @@ function BrowserPagePane({
       return promise
     }
 
+    const clearGuestRecoveryError = (): void => {
+      if (activeLoadFailureRef.current?.code !== BROWSER_GUEST_RECOVERY_ERROR_CODE) {
+        return
+      }
+      activeLoadFailureRef.current = null
+      onUpdatePageStateRef.current(browserTab.id, { loading: false, loadError: null })
+    }
+
     const guestRecovery = createBrowserPageGuestRecovery({
       webview,
       browserPageExists: () => browserPageExists(browserTab.id),
@@ -3830,15 +3841,13 @@ function BrowserPagePane({
         }
         activeLoadFailureRef.current = loadError
         onUpdatePageStateRef.current(browserTab.id, { loading: false, loadError })
-      }
+      },
+      onRecoverySucceeded: clearGuestRecoveryError
     })
 
     const handleDidAttach = (): void => {
       // Why: register at attach since cert failures can precede dom-ready; the dom-ready path stays an idempotent fallback.
-      void registerGuest().then((registered) => {
-        if (registered && guestRecoveryPendingRef.current) {
-          guestRecovery.finish()
-        }
+      void registerGuest().then(() => {
         syncBrowserAnnotationViewportBridge()
       })
     }
@@ -3848,15 +3857,20 @@ function BrowserPagePane({
         registeredWebContentsIds.get(browserTab.id) !== webview.getWebContentsId()
       if (queuedAnnotationViewportBridgeSync) {
         void registerGuest().then((registered) => {
-          if (registered && guestRecoveryPendingRef.current) {
-            guestRecovery.finish()
+          if (registered) {
+            clearGuestRecoveryError()
+            if (guestRecoveryPendingRef.current) {
+              guestRecovery.finish()
+            }
           }
           syncBrowserAnnotationViewportBridge()
         })
       } else {
         const recoveryWasPending = guestRecoveryPendingRef.current
+        const recoveryErrorVisible =
+          activeLoadFailureRef.current?.code === BROWSER_GUEST_RECOVERY_ERROR_CODE
         guestRecovery.finish()
-        if (recoveryWasPending) {
+        if (recoveryWasPending || recoveryErrorVisible) {
           guestRecovery.validateAfterResume()
         }
       }
@@ -3923,7 +3937,16 @@ function BrowserPagePane({
         return
       }
       if (activeLoadFailure?.code === BROWSER_GUEST_RECOVERY_ERROR_CODE) {
-        activeLoadFailureRef.current = null
+        trackNextLoadingEventRef.current = false
+        onUpdatePageStateRef.current(browserTab.id, {
+          loading: false,
+          title: getBrowserDisplayTitle(webview.getTitle(), browserModelUrl),
+          faviconUrl: faviconUrlRef.current,
+          canGoBack: webview.canGoBack(),
+          canGoForward: webview.canGoForward(),
+          loadError: activeLoadFailure
+        })
+        return
       } else if (activeLoadFailure) {
         const normalizedAttemptedUrl =
           normalizeBrowserNavigationUrl(activeLoadFailure.validatedUrl) ??
@@ -4067,6 +4090,7 @@ function BrowserPagePane({
 
     const unsubscribeSystemResumed = subscribeBrowserSystemResume(guestRecovery.validateAfterResume)
     validateVisibleGuestRegistrationRef.current = guestRecovery.validateAfterResume
+    retryGuestRecoveryRef.current = guestRecovery.retryRecovery
 
     webview.addEventListener('did-attach', handleDidAttach)
     webview.addEventListener('dom-ready', handleDomReady)
@@ -4122,6 +4146,9 @@ function BrowserPagePane({
       guestRecovery.dispose()
       if (validateVisibleGuestRegistrationRef.current === guestRecovery.validateAfterResume) {
         validateVisibleGuestRegistrationRef.current = () => {}
+      }
+      if (retryGuestRecoveryRef.current === guestRecovery.retryRecovery) {
+        retryGuestRecoveryRef.current = () => {}
       }
 
       if (webviewRef.current === webview) {
@@ -4638,11 +4665,15 @@ function BrowserPagePane({
     (url: string): void => {
       const navigateBrowserUrl = (targetUrl: string): void => {
         const browserModelUrl = redactKagiSessionToken(targetUrl)
+        const recoveryLoadError =
+          activeLoadFailureRef.current?.code === BROWSER_GUEST_RECOVERY_ERROR_CODE
+            ? activeLoadFailureRef.current
+            : null
         setAddressBarValue(toDisplayUrl(browserModelUrl))
         onSetUrlRef.current(browserTab.id, browserModelUrl)
         onUpdatePageStateRef.current(browserTab.id, {
           loading: true,
-          loadError: null,
+          loadError: recoveryLoadError,
           title: getBrowserDisplayTitle(browserModelUrl, browserModelUrl)
         })
         setResourceNotice(null)
@@ -5084,7 +5115,12 @@ function BrowserPagePane({
               if (browserTab.loading) {
                 webview.stop()
               } else if (browserTab.loadError) {
-                retryBrowserTabLoad(webview, browserTab, onUpdatePageStateRef.current)
+                if (browserTab.loadError.code === BROWSER_GUEST_RECOVERY_ERROR_CODE) {
+                  onUpdatePageStateRef.current(browserTab.id, { loading: true })
+                  retryGuestRecoveryRef.current()
+                } else {
+                  retryBrowserTabLoad(webview, browserTab, onUpdatePageStateRef.current)
+                }
               } else {
                 webview.reload()
               }
@@ -5551,6 +5587,10 @@ function BrowserPagePane({
                       return
                     }
                     onUpdatePageStateRef.current(browserTab.id, { loading: true })
+                    if (browserTab.loadError?.code === BROWSER_GUEST_RECOVERY_ERROR_CODE) {
+                      retryGuestRecoveryRef.current()
+                      return
+                    }
                     retryBrowserTabLoad(webview, browserTab, onUpdatePageStateRef.current)
                   }}
                   onTryHttps={navigateToUrl}

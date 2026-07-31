@@ -1,5 +1,7 @@
 export const BROWSER_GUEST_RECOVERY_ERROR_CODE = -10_000
 export const BROWSER_GUEST_RECOVERY_TIMEOUT_MS = 8_000
+export const BROWSER_GUEST_VALIDATION_RETRY_DELAY_MS = 1_000
+export const BROWSER_GUEST_VALIDATION_MAX_ATTEMPTS = 3
 
 type BrowserPageGuestRecoveryOptions = {
   webview: Electron.WebviewTag
@@ -12,12 +14,14 @@ type BrowserPageGuestRecoveryOptions = {
   replaceGuest: () => Promise<void>
   onReplacementReady: () => void
   onRecoveryFailed: () => void
+  onRecoverySucceeded: () => void
 }
 
 export type BrowserPageGuestRecovery = {
   dispose: () => void
   finish: () => void
   recoverRenderer: () => void
+  retryRecovery: () => void
   validateAfterResume: () => void
 }
 
@@ -29,11 +33,20 @@ export function createBrowserPageGuestRecovery(
   let recoveryStarted = false
   let replacementRequested = false
   let validationInFlight = false
+  let validationFailureCount = 0
+  let validationRetryTimer: number | null = null
+  let lifecycleGeneration = 0
 
   const clearRecoveryTimer = (): void => {
     if (recoveryTimer !== null) {
       window.clearTimeout(recoveryTimer)
       recoveryTimer = null
+    }
+  }
+  const clearValidationRetry = (): void => {
+    if (validationRetryTimer !== null) {
+      window.clearTimeout(validationRetryTimer)
+      validationRetryTimer = null
     }
   }
   const finish = (): void => {
@@ -58,8 +71,11 @@ export function createBrowserPageGuestRecovery(
       return
     }
     replacementRequested = true
+    lifecycleGeneration += 1
+    validationFailureCount = 0
     options.setPending(true)
     clearRecoveryTimer()
+    clearValidationRetry()
     void options.replaceGuest().finally(() => {
       if (disposed || !options.browserPageExists()) {
         options.setPending(false)
@@ -69,11 +85,19 @@ export function createBrowserPageGuestRecovery(
     })
   }
   const recoverRenderer = (): void => {
-    if (recoveryStarted || !options.isCurrentWebview() || !options.browserPageExists()) {
+    if (
+      disposed ||
+      recoveryStarted ||
+      !options.isCurrentWebview() ||
+      !options.browserPageExists()
+    ) {
       return
     }
     recoveryStarted = true
+    lifecycleGeneration += 1
+    validationFailureCount = 0
     options.setPending(true)
+    clearValidationRetry()
     watchRecovery()
     try {
       // Why: reload keeps Chromium history and guest identity while starting a fresh renderer.
@@ -82,21 +106,76 @@ export function createBrowserPageGuestRecovery(
       replaceGuest()
     }
   }
-  const validateAfterResume = (): void => {
-    if (validationInFlight || !options.shouldValidate() || !options.isCurrentWebview()) {
+  const scheduleValidationRetry = (): void => {
+    clearValidationRetry()
+    validationRetryTimer = window.setTimeout(() => {
+      validationRetryTimer = null
+      validateAfterResume()
+    }, BROWSER_GUEST_VALIDATION_RETRY_DELAY_MS)
+  }
+  function validateAfterResume(): void {
+    if (
+      disposed ||
+      recoveryStarted ||
+      validationInFlight ||
+      options.isPending() ||
+      !options.shouldValidate() ||
+      !options.isCurrentWebview()
+    ) {
       return
     }
     validationInFlight = true
+    clearValidationRetry()
+    const validationGeneration = lifecycleGeneration
+    let retryValidation = false
     void options
       .validateRegistration()
       .then((registered) => {
-        if (!registered && options.isCurrentWebview()) {
+        if (validationGeneration !== lifecycleGeneration) {
+          return
+        }
+        validationFailureCount = 0
+        if (registered) {
+          options.onRecoverySucceeded()
+        } else if (!options.isPending() && options.isCurrentWebview()) {
           replaceGuest()
         }
       })
-      .catch(() => {})
+      .catch((error: unknown) => {
+        if (validationGeneration !== lifecycleGeneration) {
+          return
+        }
+        console.warn('[browser] guest registration validation failed:', error)
+        if (
+          disposed ||
+          options.isPending() ||
+          !options.browserPageExists() ||
+          !options.shouldValidate() ||
+          !options.isCurrentWebview()
+        ) {
+          return
+        }
+        validationFailureCount += 1
+        if (validationFailureCount >= BROWSER_GUEST_VALIDATION_MAX_ATTEMPTS) {
+          validationFailureCount = 0
+          options.onRecoveryFailed()
+          return
+        }
+        retryValidation = true
+      })
       .finally(() => {
         validationInFlight = false
+        if (
+          validationGeneration !== lifecycleGeneration &&
+          !disposed &&
+          !options.isPending() &&
+          options.shouldValidate() &&
+          options.isCurrentWebview()
+        ) {
+          validateAfterResume()
+        } else if (retryValidation) {
+          scheduleValidationRetry()
+        }
       })
   }
 
@@ -107,10 +186,25 @@ export function createBrowserPageGuestRecovery(
   return {
     dispose: () => {
       disposed = true
+      lifecycleGeneration += 1
       clearRecoveryTimer()
+      clearValidationRetry()
     },
     finish,
     recoverRenderer,
+    retryRecovery: () => {
+      if (
+        disposed ||
+        options.isPending() ||
+        !options.isCurrentWebview() ||
+        !options.browserPageExists()
+      ) {
+        return
+      }
+      recoveryStarted = false
+      options.setPending(false)
+      recoverRenderer()
+    },
     validateAfterResume
   }
 }

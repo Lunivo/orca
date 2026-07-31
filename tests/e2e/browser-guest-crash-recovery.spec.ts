@@ -11,6 +11,7 @@ import {
   switchToWorktree,
   waitForActiveWorktree
 } from './helpers/store'
+import { BROWSER_GUEST_RECOVERY_ERROR_CODE } from '../../src/renderer/src/components/browser-pane/browser-page-guest-recovery'
 
 type BrowserGuestState = {
   chromePresent: boolean
@@ -312,6 +313,135 @@ test('browser chrome recovers a live registered file guest after renderer loss',
   await expect
     .poll(() => readGuestProcessId(electronApp, parkedRecovered.webContentsId!))
     .not.toBe(parkedProcessId)
+})
+
+test('recovery error stays visible until toolbar retry repairs registration', async ({
+  electronApp,
+  orcaPage,
+  registerPostElectronShutdownCleanup
+}) => {
+  const { browserTab, fixtureUrl, worktreeId } = await createBrowserFixture(
+    orcaPage,
+    registerPostElectronShutdownCleanup
+  )
+  await expect
+    .poll(() => readBrowserGuestState(orcaPage, browserTab.id))
+    .toMatchObject({ marker: 'painted-file-guest', url: fixtureUrl })
+
+  await orcaPage.evaluate(
+    (browserPageId) => window.api.browser.unregisterGuest({ browserPageId }),
+    browserTab.activePageId
+  )
+  await electronApp.evaluate(({ BrowserWindow, ipcMain }) => {
+    ipcMain.removeHandler('browser:isGuestRegistered')
+    BrowserWindow.getAllWindows()[0]?.webContents.send('system:resumed')
+  })
+
+  await expect
+    .poll(
+      () =>
+        orcaPage.evaluate(
+          ({ workspaceId, browserPageId }) =>
+            window.__store
+              ?.getState()
+              .browserPagesByWorkspace[workspaceId]?.find((page) => page.id === browserPageId)
+              ?.loadError?.code ?? null,
+          { workspaceId: browserTab.id, browserPageId: browserTab.activePageId }
+        ),
+      { timeout: 10_000 }
+    )
+    .toBe(BROWSER_GUEST_RECOVERY_ERROR_CODE)
+
+  await electronApp.evaluate(({ ipcMain }) => {
+    ipcMain.handle('browser:isGuestRegistered', () => false)
+  })
+  await orcaPage
+    .locator('[data-contextual-tour-target="browser-toolbar"]')
+    .locator('button')
+    .nth(2)
+    .click()
+
+  await expect
+    .poll(
+      () =>
+        orcaPage.evaluate(
+          ({ workspaceId, browserPageId }) =>
+            window.__store
+              ?.getState()
+              .browserPagesByWorkspace[workspaceId]?.find((page) => page.id === browserPageId)
+              ?.loadError?.code ?? null,
+          { workspaceId: browserTab.id, browserPageId: browserTab.activePageId }
+        ),
+      { timeout: 10_000 }
+    )
+    .toBeNull()
+  await expect
+    .poll(() => readBrowserGuestState(orcaPage, browserTab.id))
+    .toMatchObject({ chromePresent: true, marker: 'painted-file-guest', url: fixtureUrl })
+  await expect
+    .poll(() => listRegisteredBrowserPages(orcaPage, worktreeId))
+    .toMatchObject({
+      ok: true,
+      result: { tabs: [{ browserPageId: browserTab.activePageId, url: fixtureUrl }] }
+    })
+})
+
+test('attachment keeps recovery error until document readiness', async ({
+  orcaPage,
+  registerPostElectronShutdownCleanup
+}) => {
+  const { browserTab, fixtureUrl } = await createBrowserFixture(
+    orcaPage,
+    registerPostElectronShutdownCleanup
+  )
+  await expect
+    .poll(() => readBrowserGuestState(orcaPage, browserTab.id))
+    .toMatchObject({ marker: 'painted-file-guest', url: fixtureUrl })
+
+  await orcaPage.evaluate(
+    ({ workspaceId, browserPageId, validatedUrl, recoveryErrorCode }) => {
+      window.__store?.getState().updateBrowserPageState(browserPageId, {
+        loading: false,
+        loadError: {
+          code: recoveryErrorCode,
+          description: 'Recovery fixture error',
+          validatedUrl
+        }
+      })
+      const overlay = document.querySelector(`[data-browser-overlay-tab-id="${workspaceId}"]`)
+      const webview = overlay?.querySelector('webview') as Electron.WebviewTag
+      Object.defineProperty(webview, 'reload', {
+        configurable: true,
+        value: () => webview.dispatchEvent(new Event('did-attach'))
+      })
+    },
+    {
+      workspaceId: browserTab.id,
+      browserPageId: browserTab.activePageId,
+      validatedUrl: fixtureUrl,
+      recoveryErrorCode: BROWSER_GUEST_RECOVERY_ERROR_CODE
+    }
+  )
+  await orcaPage
+    .locator('[data-contextual-tour-target="browser-toolbar"]')
+    .locator('button')
+    .nth(2)
+    .click()
+  const recoveryErrorCode = await orcaPage.evaluate(
+    ({ workspaceId, browserPageId }) =>
+      new Promise<number | null>((resolve) => {
+        requestAnimationFrame(() => {
+          resolve(
+            window.__store
+              ?.getState()
+              .browserPagesByWorkspace[workspaceId]?.find((page) => page.id === browserPageId)
+              ?.loadError?.code ?? null
+          )
+        })
+      }),
+    { workspaceId: browserTab.id, browserPageId: browserTab.activePageId }
+  )
+  expect(recoveryErrorCode).toBe(BROWSER_GUEST_RECOVERY_ERROR_CODE)
 })
 
 test('minimized browser guest stays painted and registered after restore @headful', async ({
