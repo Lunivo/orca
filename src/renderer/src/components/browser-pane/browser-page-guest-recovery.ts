@@ -11,7 +11,7 @@ type BrowserPageGuestRecoveryOptions = {
   isCurrentWebview: () => boolean
   isPending: () => boolean
   setPending: (pending: boolean) => void
-  validateRegistration: () => Promise<boolean>
+  validateRegistration: () => Promise<boolean | null>
   replaceGuest: () => Promise<void>
   onReplacementReady: () => void
   onRecoveryFailed: () => void
@@ -19,6 +19,7 @@ type BrowserPageGuestRecoveryOptions = {
 }
 
 export type BrowserPageGuestRecovery = {
+  confirmRegistration: () => void
   dispose: () => void
   finish: () => boolean
   recoverRenderer: () => void
@@ -38,6 +39,7 @@ export function createBrowserPageGuestRecovery(
   let validationRetryTimer: number | null = null
   let validationTimeoutTimer: number | null = null
   let lifecycleGeneration = 0
+  let registrationConfirmedGeneration = -1
 
   const clearRecoveryTimer = (): void => {
     if (recoveryTimer !== null) {
@@ -134,7 +136,7 @@ export function createBrowserPageGuestRecovery(
       validateAfterResume()
     }, BROWSER_GUEST_VALIDATION_RETRY_DELAY_MS)
   }
-  const validateRegistrationWithTimeout = (): Promise<boolean> => {
+  const validateRegistrationWithTimeout = (): Promise<boolean | null> => {
     const deadline = new Promise<never>((_resolve, reject) => {
       validationTimeoutTimer = window.setTimeout(() => {
         validationTimeoutTimer = null
@@ -163,11 +165,28 @@ export function createBrowserPageGuestRecovery(
         if (validationGeneration !== lifecycleGeneration) {
           return
         }
-        validationFailureCount = 0
-        if (registered) {
+        if (registered === true) {
+          validationFailureCount = 0
           options.onRecoverySucceeded()
-        } else if (!options.isPending() && options.isCurrentWebview()) {
-          replaceGuest()
+        } else if (registered === false) {
+          validationFailureCount = 0
+          if (!options.isPending() && options.isCurrentWebview()) {
+            replaceGuest()
+          }
+        } else if (
+          !disposed &&
+          !options.isPending() &&
+          options.browserPageExists() &&
+          options.shouldValidate() &&
+          options.isCurrentWebview()
+        ) {
+          validationFailureCount += 1
+          if (validationFailureCount >= BROWSER_GUEST_VALIDATION_MAX_ATTEMPTS) {
+            validationFailureCount = 0
+            options.onRecoveryFailed()
+          } else {
+            retryValidation = true
+          }
         }
       })
       .catch((error: unknown) => {
@@ -196,6 +215,7 @@ export function createBrowserPageGuestRecovery(
         validationInFlight = false
         if (
           validationGeneration !== lifecycleGeneration &&
+          registrationConfirmedGeneration !== lifecycleGeneration &&
           !disposed &&
           !options.isPending() &&
           options.shouldValidate() &&
@@ -213,6 +233,12 @@ export function createBrowserPageGuestRecovery(
   }
 
   return {
+    confirmRegistration: () => {
+      lifecycleGeneration += 1
+      registrationConfirmedGeneration = lifecycleGeneration
+      validationFailureCount = 0
+      clearValidationRetry()
+    },
     dispose: () => {
       disposed = true
       lifecycleGeneration += 1

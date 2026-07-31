@@ -3756,16 +3756,16 @@ function BrowserPagePane({
       dismissAddressBarSuggestionsRef.current?.()
     }
 
-    let registrationInFlight: { webContentsId: number; promise: Promise<boolean> } | null = null
-    const registerGuest = (): Promise<boolean> => {
+    let registrationInFlight: {
+      webContentsId: number
+      promise: Promise<boolean | null>
+    } | null = null
+    const registerGuest = (): Promise<boolean | null> => {
       let webContentsId: number
       try {
         webContentsId = webview.getWebContentsId()
       } catch {
-        return Promise.resolve(false)
-      }
-      if (registeredWebContentsIds.get(browserTab.id) === webContentsId) {
-        return Promise.resolve(true)
+        return Promise.resolve(null)
       }
       if (registrationInFlight?.webContentsId === webContentsId) {
         return registrationInFlight.promise
@@ -3781,11 +3781,12 @@ function BrowserPagePane({
         .then((registered) => {
           if (registered) {
             registeredWebContentsIds.set(browserTab.id, webContentsId)
+            return true
           }
-          return registered
+          return null
         })
-        // Why: normalize IPC rejection to false so the dom-ready fallback can retry attach-policy races.
-        .catch(() => false)
+        // Why: registration rejection can be an attach-policy race; only validation of an identified guest proves loss.
+        .catch(() => null)
         .finally(() => {
           if (registrationInFlight?.promise === promise) {
             registrationInFlight = null
@@ -3817,7 +3818,8 @@ function BrowserPagePane({
         try {
           webContentsId = webview.getWebContentsId()
         } catch {
-          return false
+          // Why: a reused webview can remount before dom-ready; only an identified guest can be declared missing.
+          return null
         }
         if (registeredWebContentsIds.get(browserTab.id) !== webContentsId) {
           return registerGuest()
@@ -3858,7 +3860,10 @@ function BrowserPagePane({
 
     const handleDidAttach = (): void => {
       // Why: register at attach since cert failures can precede dom-ready; the dom-ready path stays an idempotent fallback.
-      void registerGuest().then(() => {
+      void registerGuest().then((registered) => {
+        if (registered === true) {
+          guestRecovery.confirmRegistration()
+        }
         syncBrowserAnnotationViewportBridge()
       })
     }
@@ -3880,11 +3885,13 @@ function BrowserPagePane({
         registeredWebContentsIds.get(browserTab.id) !== liveWebContentsId
       if (queuedAnnotationViewportBridgeSync) {
         void registerGuest().then((registered) => {
-          if (registered) {
+          const completedRecovery = guestRecovery.finish()
+          if (registered === true) {
+            guestRecovery.confirmRegistration()
             clearGuestRecoveryError()
-            guestRecovery.finish()
-          } else {
-            guestRecovery.recoverRenderer()
+          }
+          if (registered === null || completedRecovery || validateRecoveryAfterNavigation) {
+            guestRecovery.validateAfterResume()
           }
           syncBrowserAnnotationViewportBridge()
         })

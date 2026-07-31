@@ -26,7 +26,9 @@ function createRecovery(
   const onReplacementReady = vi.fn()
   const onRecoveryFailed = vi.fn()
   const onRecoverySucceeded = vi.fn()
-  const validateRegistration = vi.fn(() => Promise.resolve(overrides.registered ?? true))
+  const validateRegistration = vi.fn<() => Promise<boolean | null>>(() =>
+    Promise.resolve(overrides.registered ?? true)
+  )
   const recovery = createBrowserPageGuestRecovery({
     webview: { reload } as unknown as Electron.WebviewTag,
     browserPageExists: () => overrides.exists ?? true,
@@ -127,6 +129,108 @@ describe('browser page guest recovery', () => {
 
     expect(state.validateRegistration).toHaveBeenCalledOnce()
     expect(state.replaceGuest).toHaveBeenCalledOnce()
+  })
+
+  it('waits for an attaching guest instead of replacing it as missing', async () => {
+    vi.useFakeTimers()
+    const state = createRecovery()
+    state.validateRegistration.mockResolvedValueOnce(null).mockResolvedValueOnce(true)
+
+    state.recovery.validateAfterResume()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(state.replaceGuest).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(BROWSER_GUEST_VALIDATION_RETRY_DELAY_MS)
+
+    expect(state.validateRegistration).toHaveBeenCalledTimes(2)
+    expect(state.onRecoverySucceeded).toHaveBeenCalledOnce()
+    expect(state.replaceGuest).not.toHaveBeenCalled()
+  })
+
+  it('surfaces an attaching guest that never becomes identifiable', async () => {
+    vi.useFakeTimers()
+    const state = createRecovery()
+    state.validateRegistration.mockResolvedValue(null)
+
+    state.recovery.validateAfterResume()
+    await vi.advanceTimersByTimeAsync(0)
+    for (let attempt = 1; attempt < BROWSER_GUEST_VALIDATION_MAX_ATTEMPTS; attempt += 1) {
+      await vi.advanceTimersByTimeAsync(BROWSER_GUEST_VALIDATION_RETRY_DELAY_MS)
+    }
+
+    expect(state.validateRegistration).toHaveBeenCalledTimes(BROWSER_GUEST_VALIDATION_MAX_ATTEMPTS)
+    expect(state.onRecoveryFailed).toHaveBeenCalledOnce()
+    expect(state.replaceGuest).not.toHaveBeenCalled()
+  })
+
+  it('keeps validation active after document readiness until registration converges', async () => {
+    vi.useFakeTimers()
+    const state = createRecovery()
+    state.validateRegistration.mockResolvedValueOnce(null).mockResolvedValueOnce(true)
+
+    state.recovery.validateAfterResume()
+    await vi.advanceTimersByTimeAsync(0)
+    state.recovery.finish()
+    await vi.advanceTimersByTimeAsync(BROWSER_GUEST_VALIDATION_RETRY_DELAY_MS)
+
+    expect(state.validateRegistration).toHaveBeenCalledTimes(2)
+    expect(state.onRecoverySucceeded).toHaveBeenCalledOnce()
+    expect(state.onRecoveryFailed).not.toHaveBeenCalled()
+    expect(state.replaceGuest).not.toHaveBeenCalled()
+  })
+
+  it('cancels attaching retries after authoritative registration succeeds', async () => {
+    vi.useFakeTimers()
+    const state = createRecovery()
+    state.validateRegistration.mockResolvedValue(null)
+
+    state.recovery.validateAfterResume()
+    await vi.advanceTimersByTimeAsync(0)
+    state.recovery.confirmRegistration()
+    await vi.advanceTimersByTimeAsync(BROWSER_GUEST_VALIDATION_RETRY_DELAY_MS)
+
+    expect(state.validateRegistration).toHaveBeenCalledOnce()
+    expect(state.onRecoveryFailed).not.toHaveBeenCalled()
+    expect(state.replaceGuest).not.toHaveBeenCalled()
+  })
+
+  it('ignores an older missing result after authoritative registration succeeds', async () => {
+    let resolveValidation: ((registered: boolean | null) => void) | undefined
+    const state = createRecovery()
+    state.validateRegistration.mockImplementation(
+      () =>
+        new Promise<boolean | null>((resolve) => {
+          resolveValidation = resolve
+        })
+    )
+
+    state.recovery.validateAfterResume()
+    state.recovery.confirmRegistration()
+    resolveValidation?.(false)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(state.replaceGuest).not.toHaveBeenCalled()
+    expect(state.onRecoveryFailed).not.toHaveBeenCalled()
+  })
+
+  it('uses an authoritative missing result that settles after document readiness', async () => {
+    let resolveValidation: ((registered: boolean | null) => void) | undefined
+    const state = createRecovery()
+    state.validateRegistration.mockImplementation(
+      () =>
+        new Promise<boolean | null>((resolve) => {
+          resolveValidation = resolve
+        })
+    )
+
+    state.recovery.validateAfterResume()
+    state.recovery.finish()
+    resolveValidation?.(false)
+    await vi.waitFor(() => expect(state.replaceGuest).toHaveBeenCalledOnce())
+
+    expect(state.validateRegistration).toHaveBeenCalledOnce()
+    expect(state.onRecoveryFailed).not.toHaveBeenCalled()
   })
 
   it('does not probe inactive guests on resume', async () => {
@@ -232,8 +336,8 @@ describe('browser page guest recovery', () => {
 
     expect(state.pending()).toBe(false)
     expect(state.replaceGuest).not.toHaveBeenCalled()
-    await vi.waitFor(() => expect(state.validateRegistration).toHaveBeenCalledTimes(2))
-    expect(state.onRecoverySucceeded).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(state.onRecoverySucceeded).toHaveBeenCalledOnce())
+    expect(state.validateRegistration).toHaveBeenCalledTimes(2)
   })
 
   it('surfaces repeated validation failures after bounded retries', async () => {
@@ -245,7 +349,6 @@ describe('browser page guest recovery', () => {
     state.recovery.validateAfterResume()
     await vi.advanceTimersByTimeAsync(0)
     for (let attempt = 1; attempt < BROWSER_GUEST_VALIDATION_MAX_ATTEMPTS; attempt += 1) {
-      state.recovery.finish()
       await vi.advanceTimersByTimeAsync(BROWSER_GUEST_VALIDATION_RETRY_DELAY_MS)
     }
 

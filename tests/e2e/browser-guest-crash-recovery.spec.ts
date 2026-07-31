@@ -329,7 +329,7 @@ test('browser chrome recovers a live registered file guest after renderer loss',
     .not.toBe(parkedProcessId)
 })
 
-test('dom-ready ID loss enters bounded renderer recovery', async ({
+test('dom-ready ID loss waits for validation without reloading the guest', async ({
   orcaPage,
   registerPostElectronShutdownCleanup
 }) => {
@@ -355,6 +355,7 @@ test('dom-ready ID loss enters bounded renderer recovery', async ({
           failedReads -= 1
           throw new Error('guest detached')
         }
+        webview.dataset.domReadyIdRestored = 'true'
         return getWebContentsId()
       }
     })
@@ -374,11 +375,16 @@ test('dom-ready ID loss enters bounded renderer recovery', async ({
         (targetBrowserTabId) =>
           document
             .querySelector(`[data-browser-overlay-tab-id="${targetBrowserTabId}"] webview`)
-            ?.getAttribute('data-recovery-reload-attempted') ?? null,
+            ?.getAttribute('data-dom-ready-id-restored') ?? null,
         browserTab.id
       )
     )
     .toBe('true')
+  await expect(
+    orcaPage.locator(
+      `[data-browser-overlay-tab-id="${browserTab.id}"] webview[data-recovery-reload-attempted]`
+    )
+  ).toHaveCount(0)
   await expect
     .poll(() => readBrowserGuestState(orcaPage, browserTab.id), { timeout: 10_000 })
     .toMatchObject({
