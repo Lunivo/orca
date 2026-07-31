@@ -467,7 +467,24 @@ test('explicit navigation repairs a recovery error without dom-ready churn', asy
   const committedRequest = new Promise<void>((resolve) => {
     resolveCommittedRequest = resolve
   })
+  let resolveRedirectedRequest: (() => void) | null = null
+  const redirectedRequest = new Promise<void>((resolve) => {
+    resolveRedirectedRequest = resolve
+  })
   const stalledServer = createServer((request, response) => {
+    if (request.url === '/redirect') {
+      response.writeHead(302, { Location: '/redirected' })
+      response.end()
+      return
+    }
+    if (request.url === '/redirected') {
+      response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+      response.end(
+        '<!doctype html><html><body><h1 id="recovery-marker">painted-redirected-guest</h1></body></html>'
+      )
+      resolveRedirectedRequest?.()
+      return
+    }
     if (request.url === '/committed') {
       response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
       response.write('<!doctype html><html><head><title>Committed stall</title></head><body>')
@@ -563,6 +580,67 @@ test('explicit navigation repairs a recovery error without dom-ready churn', asy
     .toMatchObject({
       ok: true,
       result: { tabs: [{ browserPageId: browserTab.activePageId, url: fixtureUrl }] }
+    })
+  expect(
+    await electronApp.evaluate(() => {
+      const testState = globalThis as typeof globalThis & {
+        browserRecoveryValidationCalls?: number
+      }
+      return testState.browserRecoveryValidationCalls ?? 0
+    })
+  ).toBe(1)
+
+  await orcaPage.evaluate(
+    (browserPageId) => window.api.browser.unregisterGuest({ browserPageId }),
+    browserTab.activePageId
+  )
+  await orcaPage.evaluate(
+    ({ browserPageId, validatedUrl, recoveryErrorCode }) => {
+      window.__store?.getState().updateBrowserPageState(browserPageId, {
+        loading: false,
+        loadError: {
+          code: recoveryErrorCode,
+          description: 'Recovery redirect fixture error',
+          validatedUrl
+        }
+      })
+    },
+    {
+      browserPageId: browserTab.activePageId,
+      validatedUrl: fixtureUrl,
+      recoveryErrorCode: BROWSER_GUEST_RECOVERY_ERROR_CODE
+    }
+  )
+  await expect
+    .poll(() => readBrowserPageRecoveryState(orcaPage, browserTab.id, browserTab.activePageId))
+    .toMatchObject({ loadErrorCode: BROWSER_GUEST_RECOVERY_ERROR_CODE })
+  await electronApp.evaluate(() => {
+    const testState = globalThis as typeof globalThis & {
+      browserRecoveryValidationCalls?: number
+    }
+    testState.browserRecoveryValidationCalls = 0
+  })
+
+  const redirectedUrl = `${stalledOrigin}/redirected`
+  await addressBar.fill(`${stalledOrigin}/redirect`)
+  await addressBar.press('Enter')
+  await redirectedRequest
+
+  await expect
+    .poll(() => readBrowserPageRecoveryState(orcaPage, browserTab.id, browserTab.activePageId))
+    .toMatchObject({ loadErrorCode: null, url: redirectedUrl })
+  await expect
+    .poll(() => listRegisteredBrowserPages(orcaPage, worktreeId))
+    .toMatchObject({
+      ok: true,
+      result: { tabs: [{ browserPageId: browserTab.activePageId, url: redirectedUrl }] }
+    })
+  await expect
+    .poll(() => readBrowserGuestState(orcaPage, browserTab.id))
+    .toMatchObject({
+      chromePresent: true,
+      marker: 'painted-redirected-guest',
+      url: redirectedUrl
     })
   expect(
     await electronApp.evaluate(() => {
