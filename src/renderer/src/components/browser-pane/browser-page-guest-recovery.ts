@@ -1,6 +1,7 @@
 export const BROWSER_GUEST_RECOVERY_ERROR_CODE = -10_000
 export const BROWSER_GUEST_RECOVERY_TIMEOUT_MS = 8_000
 export const BROWSER_GUEST_VALIDATION_RETRY_DELAY_MS = 1_000
+export const BROWSER_GUEST_VALIDATION_TIMEOUT_MS = 3_000
 export const BROWSER_GUEST_VALIDATION_MAX_ATTEMPTS = 3
 
 type BrowserPageGuestRecoveryOptions = {
@@ -35,6 +36,7 @@ export function createBrowserPageGuestRecovery(
   let validationInFlight = false
   let validationFailureCount = 0
   let validationRetryTimer: number | null = null
+  let validationTimeoutTimer: number | null = null
   let lifecycleGeneration = 0
 
   const clearRecoveryTimer = (): void => {
@@ -47,6 +49,12 @@ export function createBrowserPageGuestRecovery(
     if (validationRetryTimer !== null) {
       window.clearTimeout(validationRetryTimer)
       validationRetryTimer = null
+    }
+  }
+  const clearValidationTimeout = (): void => {
+    if (validationTimeoutTimer !== null) {
+      window.clearTimeout(validationTimeoutTimer)
+      validationTimeoutTimer = null
     }
   }
   const finish = (): boolean => {
@@ -78,13 +86,24 @@ export function createBrowserPageGuestRecovery(
     options.setPending(true)
     clearRecoveryTimer()
     clearValidationRetry()
-    void options.replaceGuest().finally(() => {
-      if (disposed || !options.browserPageExists()) {
+    void options.replaceGuest().then(
+      () => {
+        if (disposed || !options.browserPageExists()) {
+          options.setPending(false)
+          return
+        }
+        options.onReplacementReady()
+      },
+      (error: unknown) => {
         options.setPending(false)
-        return
+        replacementRequested = false
+        if (disposed || !options.browserPageExists()) {
+          return
+        }
+        console.warn('[browser] guest replacement failed:', error)
+        options.onRecoveryFailed()
       }
-      options.onReplacementReady()
-    })
+    )
   }
   const recoverRenderer = (): void => {
     if (
@@ -115,6 +134,15 @@ export function createBrowserPageGuestRecovery(
       validateAfterResume()
     }, BROWSER_GUEST_VALIDATION_RETRY_DELAY_MS)
   }
+  const validateRegistrationWithTimeout = (): Promise<boolean> => {
+    const deadline = new Promise<never>((_resolve, reject) => {
+      validationTimeoutTimer = window.setTimeout(() => {
+        validationTimeoutTimer = null
+        reject(new Error('Guest registration validation timed out'))
+      }, BROWSER_GUEST_VALIDATION_TIMEOUT_MS)
+    })
+    return Promise.race([options.validateRegistration(), deadline]).finally(clearValidationTimeout)
+  }
   function validateAfterResume(): void {
     if (
       disposed ||
@@ -130,8 +158,7 @@ export function createBrowserPageGuestRecovery(
     clearValidationRetry()
     const validationGeneration = lifecycleGeneration
     let retryValidation = false
-    void options
-      .validateRegistration()
+    void validateRegistrationWithTimeout()
       .then((registered) => {
         if (validationGeneration !== lifecycleGeneration) {
           return
@@ -191,6 +218,7 @@ export function createBrowserPageGuestRecovery(
       lifecycleGeneration += 1
       clearRecoveryTimer()
       clearValidationRetry()
+      clearValidationTimeout()
     },
     finish,
     recoverRenderer,

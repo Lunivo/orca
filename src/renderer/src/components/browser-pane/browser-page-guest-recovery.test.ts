@@ -5,6 +5,7 @@ import {
   BROWSER_GUEST_RECOVERY_TIMEOUT_MS,
   BROWSER_GUEST_VALIDATION_MAX_ATTEMPTS,
   BROWSER_GUEST_VALIDATION_RETRY_DELAY_MS,
+  BROWSER_GUEST_VALIDATION_TIMEOUT_MS,
   createBrowserPageGuestRecovery
 } from './browser-page-guest-recovery'
 
@@ -16,11 +17,12 @@ function createRecovery(
     pending?: boolean
     registered?: boolean
     reload?: () => void
+    replaceGuest?: () => Promise<void>
   } = {}
 ) {
   let pending = overrides.pending ?? false
   const reload = vi.fn(overrides.reload ?? (() => {}))
-  const replaceGuest = vi.fn(() => Promise.resolve())
+  const replaceGuest = vi.fn(overrides.replaceGuest ?? (() => Promise.resolve()))
   const onReplacementReady = vi.fn()
   const onRecoveryFailed = vi.fn()
   const onRecoverySucceeded = vi.fn()
@@ -97,6 +99,24 @@ describe('browser page guest recovery', () => {
 
     expect(state.replaceGuest).toHaveBeenCalledOnce()
     expect(state.pending()).toBe(true)
+  })
+
+  it('surfaces guest replacement rejection without marking it ready', async () => {
+    const replacementError = new Error('replacement failed')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const state = createRecovery({
+      reload: () => {
+        throw new Error('guest destroyed')
+      },
+      replaceGuest: () => Promise.reject(replacementError)
+    })
+
+    state.recovery.recoverRenderer()
+    await vi.waitFor(() => expect(state.onRecoveryFailed).toHaveBeenCalledOnce())
+
+    expect(warn).toHaveBeenCalledWith('[browser] guest replacement failed:', replacementError)
+    expect(state.onReplacementReady).not.toHaveBeenCalled()
+    expect(state.pending()).toBe(false)
   })
 
   it('recreates an active guest missing from the authoritative registry after resume', async () => {
@@ -227,6 +247,25 @@ describe('browser page guest recovery', () => {
     for (let attempt = 1; attempt < BROWSER_GUEST_VALIDATION_MAX_ATTEMPTS; attempt += 1) {
       state.recovery.finish()
       await vi.advanceTimersByTimeAsync(BROWSER_GUEST_VALIDATION_RETRY_DELAY_MS)
+    }
+
+    expect(state.validateRegistration).toHaveBeenCalledTimes(BROWSER_GUEST_VALIDATION_MAX_ATTEMPTS)
+    expect(state.onRecoveryFailed).toHaveBeenCalledOnce()
+    expect(state.replaceGuest).not.toHaveBeenCalled()
+  })
+
+  it('surfaces hung validation IPC after bounded deadlines', async () => {
+    vi.useFakeTimers()
+    const state = createRecovery()
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    state.validateRegistration.mockImplementation(() => new Promise<boolean>(() => {}))
+
+    state.recovery.validateAfterResume()
+    for (let attempt = 0; attempt < BROWSER_GUEST_VALIDATION_MAX_ATTEMPTS; attempt += 1) {
+      await vi.advanceTimersByTimeAsync(BROWSER_GUEST_VALIDATION_TIMEOUT_MS)
+      if (attempt < BROWSER_GUEST_VALIDATION_MAX_ATTEMPTS - 1) {
+        await vi.advanceTimersByTimeAsync(BROWSER_GUEST_VALIDATION_RETRY_DELAY_MS)
+      }
     }
 
     expect(state.validateRegistration).toHaveBeenCalledTimes(BROWSER_GUEST_VALIDATION_MAX_ATTEMPTS)
