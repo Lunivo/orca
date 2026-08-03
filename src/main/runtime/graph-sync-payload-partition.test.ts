@@ -231,6 +231,21 @@ describe('graph-sync mobile payload partition', () => {
     ).toBe(false)
   })
 
+  it('does not request a renderer tab rejected by the retirement fence', () => {
+    const { sync, setSession, internals } = createRuntime()
+    setSession(
+      makeSession({
+        terminalTopologyRevisionByRepoId: { 'repo-1': 1 }
+      })
+    )
+
+    sync([makeSnapshot(WT_A, 1)])
+    expect(internals.mobileSessionTabsByWorktree.get(WT_A)?.tabs).toEqual([])
+
+    expect(sync([], [WT_A]).mobileSessionResyncWorktrees).toBeUndefined()
+    expect(sync([], [WT_A]).mobileSessionResyncWorktrees).toBeUndefined()
+  })
+
   it('leaves the legacy full-payload contract untouched when no list is sent', () => {
     const { events, sync, internals } = createRuntime()
     sync([makeSnapshot(WT_A, 1), makeSnapshot(WT_B, 2)])

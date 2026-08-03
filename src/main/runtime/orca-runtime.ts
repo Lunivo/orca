@@ -28683,9 +28683,9 @@ export class OrcaRuntimeService {
       this.acceptedRendererMobileSnapshotByWorktree.set(snapshot.worktree, {
         publicationEpoch: snapshot.publicationEpoch,
         rendererVersion: snapshot.snapshotVersion,
-        rendererTabCount: snapshot.tabs.length,
+        rendererTabCount: fencedSnapshot.tabs.length,
         rendererTabIdentityKeys: new Set(
-          snapshot.tabs.flatMap((tab) => this.getMobileSessionSnapshotTabIdentityKeys(tab))
+          fencedSnapshot.tabs.flatMap((tab) => this.getMobileSessionSnapshotTabIdentityKeys(tab))
         )
       })
     }
