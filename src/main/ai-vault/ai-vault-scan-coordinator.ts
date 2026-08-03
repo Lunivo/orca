@@ -13,6 +13,9 @@ type ScanEntry = {
   startedAt: number
   promise: Promise<AiVaultListResult>
   waiterCount: number
+  // Set when a forced caller replaced this entry, so its waiters re-join the
+  // replacement instead of surfacing someone else's refresh as their own cancel.
+  preemptedBy: ScanEntry | null
 }
 
 export class AiVaultScanCoordinator {
@@ -28,14 +31,20 @@ export class AiVaultScanCoordinator {
       return Promise.reject(scanCancellationError())
     }
     let entry = this.entries.get(args.key)
-    if (entry && args.force === true && canPreemptForForcedScan(entry)) {
-      this.removeEntry(args.key, entry)
-      entry.controller.abort()
+    const preempted = entry && args.force === true && canPreemptForForcedScan(entry) ? entry : null
+    if (preempted) {
+      this.removeEntry(args.key, preempted)
       entry = undefined
     }
     if (!entry) {
       entry = this.createEntry(args.key, args.force === true, args.start)
       this.entries.set(args.key, entry)
+    }
+    if (preempted) {
+      // The replacement must be registered before the abort lands: waiters of
+      // the old scan re-join it synchronously from their abort listener.
+      preempted.preemptedBy = entry
+      preempted.controller.abort()
     }
     return this.attach(args.key, entry, args.signal)
   }
@@ -56,7 +65,8 @@ export class AiVaultScanCoordinator {
         }
         return start(controller.signal)
       }),
-      waiterCount: 0
+      waiterCount: 0,
+      preemptedBy: null
     }
     void entry.promise.then(
       () => this.removeEntry(key, entry),
@@ -83,8 +93,19 @@ export class AiVaultScanCoordinator {
         }
       }
       const onAbort = (): void => {
+        if (!attached) {
+          return
+        }
+        // Why: a forced refresh aborts the shared entry, but the other waiters
+        // never asked to cancel — rejecting them turns one window's Refresh into
+        // a cancelled multi-host merge somewhere else. Re-join the replacement.
+        const replacement = signal?.aborted ? null : entry.preemptedBy
         detach()
-        reject(scanCancellationError())
+        if (!replacement) {
+          reject(scanCancellationError())
+          return
+        }
+        void this.attach(key, replacement, signal).then(resolve, reject)
       }
       signal?.addEventListener('abort', onAbort, { once: true })
       entry.controller.signal.addEventListener('abort', onAbort, { once: true })

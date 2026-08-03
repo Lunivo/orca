@@ -7,7 +7,7 @@ import { partitionSubagentTranscriptPaths } from './session-scanner-subagent-tra
 import type { FileWithMtime } from './session-scanner-types'
 import { errorMessage } from './session-scanner-values'
 import { mapRemoteScanBatches } from './remote-session-scan-batching'
-import { throwIfRemoteSessionScanCancelled } from './remote-session-scan-cancellation'
+import { throwIfAiVaultScanCancelled } from './ai-vault-scan-cancellation'
 import { recordRemoteSessionScanIssue } from './remote-session-scan-issues'
 import type {
   RemoteScannerContext,
@@ -60,12 +60,12 @@ async function listRemoteFixedChildFiles(
   context: RemoteScannerContext,
   issues: AiVaultScanIssue[]
 ): Promise<string[]> {
-  throwIfRemoteSessionScanCancelled(context.signal)
+  throwIfAiVaultScanCancelled(context.signal)
   let entries
   try {
     entries = await context.provider.readDir(source.rootDir)
   } catch (err) {
-    throwIfRemoteSessionScanCancelled(context.signal)
+    throwIfAiVaultScanCancelled(context.signal)
     recordRemoteDirectoryIssue(source, context.executionHostId, issues, source.rootDir, err)
     return []
   }
@@ -85,12 +85,12 @@ async function walkRemoteSessionFiles(
   dirPath = source.rootDir,
   depth = 0
 ): Promise<string[]> {
-  throwIfRemoteSessionScanCancelled(context.signal)
+  throwIfAiVaultScanCancelled(context.signal)
   let entries
   try {
     entries = await context.provider.readDir(dirPath)
   } catch (err) {
-    throwIfRemoteSessionScanCancelled(context.signal)
+    throwIfAiVaultScanCancelled(context.signal)
     recordRemoteDirectoryIssue(source, context.executionHostId, issues, dirPath, err)
     return []
   }
@@ -98,7 +98,7 @@ async function walkRemoteSessionFiles(
   const extensions = new Set(source.extensions)
   const files: string[] = []
   for (const entry of entries) {
-    throwIfRemoteSessionScanCancelled(context.signal)
+    throwIfAiVaultScanCancelled(context.signal)
     const fullPath = joinRemotePath(context.hostPlatform, dirPath, entry.name)
     if (
       entry.isDirectory &&

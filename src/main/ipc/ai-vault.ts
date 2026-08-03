@@ -32,6 +32,7 @@ import {
   normalizeExecutionHostScope,
   parseExecutionHostId,
   toRuntimeExecutionHostId,
+  toSshExecutionHostId,
   type ExecutionHostScope
 } from '../../shared/execution-host'
 import { getActiveSshAiVaultHostInfos } from './ssh'
@@ -42,10 +43,20 @@ import {
   type RuntimeAiVaultHostInfo,
   type RuntimeAiVaultScanner
 } from './ai-vault-runtime-scan'
+import {
+  AI_VAULT_CACHE_TTL_MS,
+  resetAiVaultHostLegCacheForTests,
+  scanHostLegWithCache
+} from './ai-vault-host-leg-cache'
 
-const AI_VAULT_CACHE_TTL_MS = 15_000
 const AI_VAULT_ALL_HOST_RUNTIME_TIMEOUT_MS = 3_000
-const AI_VAULT_ALL_HOST_SSH_TIMEOUT_MS = 3_000
+// Why: a remote home with many agent roots routinely needs seconds to walk,
+// stat and parse. The old shared 3s bound emptied healthy SSH hosts in the
+// all-hosts view; the relay gets a real scan budget and the whole leg (relay
+// attempt plus any legacy crawl) stays bounded so one host can't hold the
+// merge open.
+const AI_VAULT_ALL_HOST_SSH_RELAY_TIMEOUT_MS = 15_000
+const AI_VAULT_ALL_HOST_SSH_TIMEOUT_MS = 20_000
 
 type AiVaultHandlerOptions = AiVaultSessionSources &
   AiVaultResumeHandlerOptions & {
@@ -91,7 +102,7 @@ async function listAiVaultSessions(
     force: args?.force,
     signal: options.signal,
     start: (scanSignal) =>
-      scanAiVaultSessionsByHostScope(args, executionHostScope, scanSignal).then((result) => {
+      scanAiVaultSessionsByHostScope(args, executionHostScope, scanSignal, key).then((result) => {
         if (
           executionHostScope !== LOCAL_EXECUTION_HOST_ID &&
           !scanSignal.aborted &&
@@ -111,7 +122,8 @@ async function listAiVaultSessions(
 async function scanAiVaultSessionsByHostScope(
   args: AiVaultListArgs | undefined,
   executionHostScope: ExecutionHostScope,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  cacheKey = ''
 ): Promise<AiVaultListResult> {
   if (executionHostScope === LOCAL_EXECUTION_HOST_ID) {
     return scanLocalAiVaultSessions(args, signal)
@@ -126,17 +138,28 @@ async function scanAiVaultSessionsByHostScope(
     const scannedResults = await Promise.all([
       scanLocalAiVaultSessionsForAllScope(args, signal),
       ...sshHosts.hostInfos.map((hostInfo) =>
-        scanSshAiVaultSessions(hostInfo.targetId, args, {
-          signal,
-          timeoutMs: AI_VAULT_ALL_HOST_SSH_TIMEOUT_MS
+        scanHostLegWithCache({
+          cacheKey: `${cacheKey}|${toSshExecutionHostId(hostInfo.targetId)}`,
+          force: args?.force === true,
+          scan: () =>
+            scanSshAiVaultSessions(hostInfo.targetId, args, {
+              signal,
+              timeoutMs: AI_VAULT_ALL_HOST_SSH_TIMEOUT_MS,
+              relayTimeoutMs: AI_VAULT_ALL_HOST_SSH_RELAY_TIMEOUT_MS
+            })
         })
       ),
       ...runtimeHosts.hostInfos.map((hostInfo) =>
-        scanRuntimeAiVaultSessions({
-          hostInfo,
-          scanner: handlerOptions.scanRuntimeAiVaultSessions,
-          listArgs: args,
-          options: { signal, timeoutMs: AI_VAULT_ALL_HOST_RUNTIME_TIMEOUT_MS }
+        scanHostLegWithCache({
+          cacheKey: `${cacheKey}|${hostInfo.executionHostId}`,
+          force: args?.force === true,
+          scan: () =>
+            scanRuntimeAiVaultSessions({
+              hostInfo,
+              scanner: handlerOptions.scanRuntimeAiVaultSessions,
+              listArgs: args,
+              options: { signal, timeoutMs: AI_VAULT_ALL_HOST_RUNTIME_TIMEOUT_MS }
+            })
         })
       )
     ])
@@ -306,6 +329,7 @@ async function listAiVaultSubagentSessions(
 
 function resetAiVaultCacheForTests(): void {
   cachedList = null
+  resetAiVaultHostLegCacheForTests()
   scanCoordinator = new AiVaultScanCoordinator()
   handlerOptions = {}
   // The local leg delegates to the shared cache module; reset it too so tests

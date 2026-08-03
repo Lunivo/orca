@@ -1530,6 +1530,9 @@ function createAiVaultApi(): NonNullable<Partial<PreloadApi>['aiVault']> {
         executionHostId
       })
     },
+    // Why: the runtime RPC transport has no cancel verb, so the in-flight scan
+    // settles on its own timeout. The renderer's refreshId guard already drops
+    // the late result; this only means web pays for a scan nobody reads.
     cancelListSessions: () => Promise.resolve(),
     prepareSessionResume: (args: AiVaultPrepareSessionResumeArgs) =>
       callRuntimeResult<AiVaultPrepareSessionResumeResult>('aiVault.prepareSessionResume', args),

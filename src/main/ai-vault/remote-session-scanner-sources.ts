@@ -25,7 +25,9 @@ type RemoteContentParser = (
   file: FileWithMtime,
   content: string,
   platform: NodeJS.Platform,
-  options: RemoteParserOptions
+  options: RemoteParserOptions,
+  // Line-based parsers iterate cancellably; whole-document parsers ignore it.
+  signal?: AbortSignal
 ) => Promise<AiVaultSession | null> | AiVaultSession | null
 
 export function remoteSessionSources(
@@ -126,7 +128,8 @@ function remoteAntigravitySource(
         file,
         content,
         context.hostPlatform.os,
-        parserOptions(context)
+        parserOptions(context),
+        context.signal
       )
       return session ? context.antigravityWorkspaceResolver.enrich(session, historyPath) : null
     }
@@ -150,7 +153,9 @@ function source(
     filePredicate,
     directoryPredicate,
     parse: (file, content, context) =>
-      Promise.resolve(parseContent(file, content, context.hostPlatform.os, parserOptions(context)))
+      Promise.resolve(
+        parseContent(file, content, context.hostPlatform.os, parserOptions(context), context.signal)
+      )
   }
 }
 
@@ -235,27 +240,30 @@ function piParser(
   file: FileWithMtime,
   content: string,
   platform: NodeJS.Platform,
-  options: RemoteParserOptions
+  options: RemoteParserOptions,
+  signal?: AbortSignal
 ): Promise<AiVaultSession | null> {
-  return parseMessageGraphSessionContent('pi', file, content, platform, options)
+  return parseMessageGraphSessionContent('pi', file, content, platform, options, signal)
 }
 
 function ompParser(
   file: FileWithMtime,
   content: string,
   platform: NodeJS.Platform,
-  options: RemoteParserOptions
+  options: RemoteParserOptions,
+  signal?: AbortSignal
 ): Promise<AiVaultSession | null> {
-  return parseMessageGraphSessionContent('omp', file, content, platform, options)
+  return parseMessageGraphSessionContent('omp', file, content, platform, options, signal)
 }
 
 function openClawParser(
   file: FileWithMtime,
   content: string,
   platform: NodeJS.Platform,
-  options: RemoteParserOptions
+  options: RemoteParserOptions,
+  signal?: AbortSignal
 ): Promise<AiVaultSession | null> {
-  return parseMessageGraphSessionContent('openclaw', file, content, platform, options)
+  return parseMessageGraphSessionContent('openclaw', file, content, platform, options, signal)
 }
 
 function remotePathSegments(path: string): string[] {

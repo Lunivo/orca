@@ -1,8 +1,8 @@
 import type { AiVaultListArgs, AiVaultListResult } from '../../shared/ai-vault-types'
 import {
   abandonRemoteSessionScanOnCancel,
-  throwIfRemoteSessionScanCancelled
-} from '../ai-vault/remote-session-scan-cancellation'
+  throwIfAiVaultScanCancelled
+} from '../ai-vault/ai-vault-scan-cancellation'
 import { aiVaultScanIssueResult } from '../ai-vault/session-list-results'
 
 export type RuntimeAiVaultHostInfo = {
@@ -31,7 +31,7 @@ export async function scanRuntimeAiVaultSessions(args: {
   options?: RuntimeAiVaultScanOptions & { signal?: AbortSignal }
 }): Promise<AiVaultListResult> {
   const { signal, ...scannerOptions } = args.options ?? {}
-  throwIfRemoteSessionScanCancelled(signal)
+  throwIfAiVaultScanCancelled(signal)
   if (!args.scanner) {
     return runtimeScanIssueResult(
       args.hostInfo,

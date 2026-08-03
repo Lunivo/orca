@@ -25,9 +25,11 @@ export function AiVaultScanIssueBanners({
           {blocking.message}
         </div>
       ) : null}
-      {aiVaultScanNoticeIssues(scanResult).map((issue) => (
+      {aiVaultScanNoticeIssues(scanResult).map((issue, index) => (
         <div
-          key={`${issue.executionHostId ?? 'local'}:${issue.kind}:${issue.path}`}
+          // Index-suffixed: one host can report several messages for the same
+          // path, and a colliding key drops those rows.
+          key={`${index}:${issue.executionHostId ?? 'local'}:${issue.kind}:${issue.path}`}
           className={`border-b border-sidebar-border px-3 py-1.5 text-[11px] ${
             issue.kind === 'host' ? 'text-destructive' : 'text-muted-foreground'
           }`}

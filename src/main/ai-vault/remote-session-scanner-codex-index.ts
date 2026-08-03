@@ -2,7 +2,7 @@ import type { RemoteHostPlatform } from '../ssh/ssh-remote-platform'
 import { joinRemotePath } from '../ssh/ssh-remote-platform'
 import { extractString, normalizeTitleText, parseJsonObject } from './session-scanner-values'
 import { remoteSessionContentLines } from './remote-session-content-lines'
-import { throwIfRemoteSessionScanCancelled } from './remote-session-scan-cancellation'
+import { throwIfAiVaultScanCancelled } from './ai-vault-scan-cancellation'
 import type { RemoteSessionFilesystemProvider } from './remote-session-scanner-types'
 
 const CODEX_SESSION_INDEX_FILE = 'session_index.jsonl'
@@ -36,11 +36,11 @@ async function readRemoteCodexIndexTitles(
 ): Promise<Map<string, string>> {
   const titleBySessionId = new Map<string, string>()
   try {
-    throwIfRemoteSessionScanCancelled(signal)
+    throwIfAiVaultScanCancelled(signal)
     const { content, isBinary } = await provider.readFile(
       joinRemotePath(hostPlatform, codexHome, CODEX_SESSION_INDEX_FILE)
     )
-    throwIfRemoteSessionScanCancelled(signal)
+    throwIfAiVaultScanCancelled(signal)
     if (isBinary) {
       return titleBySessionId
     }
@@ -56,7 +56,7 @@ async function readRemoteCodexIndexTitles(
       }
     }
   } catch {
-    throwIfRemoteSessionScanCancelled(signal)
+    throwIfAiVaultScanCancelled(signal)
     // Codex indexes are opportunistic; raw transcripts remain sufficient.
   }
   return titleBySessionId

@@ -23,8 +23,9 @@ import { sessionSortTime } from './session-scanner-accumulator'
 import { createAntigravityWorkspaceResolver } from './session-scanner-antigravity-history'
 import { errorMessage } from './session-scanner-values'
 import { mapRemoteScanBatches } from './remote-session-scan-batching'
-import { throwIfRemoteSessionScanCancelled } from './remote-session-scan-cancellation'
+import { throwIfAiVaultScanCancelled } from './ai-vault-scan-cancellation'
 import { recordRemoteSessionScanIssue } from './remote-session-scan-issues'
+import { limitRemoteScanFilesystemConcurrency } from './remote-session-scan-concurrency'
 
 const DEFAULT_REMOTE_SCAN_LIMIT = 1000
 const REMOTE_SCAN_CONCURRENCY = 8
@@ -39,20 +40,28 @@ export async function scanRemoteAiVaultSessions(args: {
   scopePaths?: readonly string[]
   signal?: AbortSignal
 }): Promise<AiVaultListResult> {
-  throwIfRemoteSessionScanCancelled(args.signal)
+  throwIfAiVaultScanCancelled(args.signal)
   const limit = args.limit && args.limit > 0 ? Math.floor(args.limit) : DEFAULT_REMOTE_SCAN_LIMIT
   const issues: AiVaultScanIssue[] = []
+  // One ceiling for the whole scan: discovery walks, stats and transcript reads
+  // all queue behind it instead of multiplying into a nested fan-out.
+  const provider = limitRemoteScanFilesystemConcurrency(args.provider)
   const context: RemoteScannerContext = {
-    provider: args.provider,
+    provider,
     executionHostId: args.executionHostId,
     hostPlatform: args.hostPlatform,
     signal: args.signal,
     titleCaches: new Map(),
     antigravityWorkspaceResolver: createAntigravityWorkspaceResolver(async (historyPath) => {
       try {
-        const read = await args.provider.readFile(historyPath)
+        throwIfAiVaultScanCancelled(args.signal)
+        const read = await provider.readFile(historyPath)
+        throwIfAiVaultScanCancelled(args.signal)
         return read.isBinary ? null : read.content
-      } catch {
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          throw error
+        }
         return null
       }
     })
@@ -123,7 +132,7 @@ async function parseRemoteSessionCandidates(args: {
     for (const candidate of batch) {
       parsedFilePaths.add(candidate.file.path)
     }
-    throwIfRemoteSessionScanCancelled(args.context.signal)
+    throwIfAiVaultScanCancelled(args.context.signal)
     const results = await Promise.all(
       batch.map((candidate) => parseRemoteSessionCandidate(candidate, args.context, args.issues))
     )
@@ -136,7 +145,7 @@ async function parseRemoteSessionCandidates(args: {
 
   // The loop can terminate on the yield after its final batch, so re-check
   // rather than letting a cancelled scan return a partial parse as a success.
-  throwIfRemoteSessionScanCancelled(args.context.signal)
+  throwIfAiVaultScanCancelled(args.context.signal)
   return { sessions, parsedFilePaths }
 }
 
@@ -173,14 +182,14 @@ async function parseRemoteSessionCandidate(
   issues: AiVaultScanIssue[]
 ): Promise<AiVaultSession | null> {
   try {
-    throwIfRemoteSessionScanCancelled(context.signal)
+    throwIfAiVaultScanCancelled(context.signal)
     const read = await context.provider.readFile(candidate.file.path)
-    throwIfRemoteSessionScanCancelled(context.signal)
+    throwIfAiVaultScanCancelled(context.signal)
     if (read.isBinary) {
       return null
     }
     const session = await candidate.source.parse(candidate.file, read.content, context)
-    throwIfRemoteSessionScanCancelled(context.signal)
+    throwIfAiVaultScanCancelled(context.signal)
     // Mirror the local rule: every session carries its sibling subagent
     // transcript count (row badge; recoverable signal at zero turns). The
     // walk listing supplies it — the parser can't readdir a remote disk.
@@ -190,7 +199,7 @@ async function parseRemoteSessionCandidate(
     }
     return session
   } catch (err) {
-    throwIfRemoteSessionScanCancelled(context.signal)
+    throwIfAiVaultScanCancelled(context.signal)
     recordRemoteSessionScanIssue(issues, {
       executionHostId: context.executionHostId,
       agent: candidate.source.agent,

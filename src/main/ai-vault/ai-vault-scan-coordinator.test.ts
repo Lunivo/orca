@@ -29,7 +29,7 @@ describe('AiVaultScanCoordinator', () => {
     expect(start).toHaveBeenCalledTimes(1)
   })
 
-  it('preempts a non-forced scan and coalesces callers onto the forced scan', async () => {
+  it('preempts a non-forced scan and re-joins its caller onto the forced scan', async () => {
     const coordinator = new AiVaultScanCoordinator()
     const signals: AbortSignal[] = []
     let resolveForced: ((result: typeof EMPTY_RESULT) => void) | undefined
@@ -44,18 +44,22 @@ describe('AiVaultScanCoordinator', () => {
       })
     })
     const first = coordinator.run({ key: 'scope', start })
-    const firstRejection = expect(first).rejects.toMatchObject({ name: 'AbortError' })
     await Promise.resolve()
 
     const forced = coordinator.run({ key: 'scope', force: true, start })
     const joined = coordinator.run({ key: 'scope', force: true, start })
     await Promise.resolve()
 
-    await firstRejection
     expect(signals[0]?.aborted).toBe(true)
     expect(start).toHaveBeenCalledTimes(2)
     resolveForced?.(EMPTY_RESULT)
-    await expect(Promise.all([forced, joined])).resolves.toEqual([EMPTY_RESULT, EMPTY_RESULT])
+    // The first caller never asked to cancel, so someone else's Refresh must
+    // hand it the replacement's result instead of a spurious cancellation.
+    await expect(Promise.all([first, forced, joined])).resolves.toEqual([
+      EMPTY_RESULT,
+      EMPTY_RESULT,
+      EMPTY_RESULT
+    ])
   })
 
   it('keeps coalescing forced callers onto a forced scan that is still fresh', async () => {
@@ -100,18 +104,18 @@ describe('AiVaultScanCoordinator', () => {
         })
       })
       const stuck = coordinator.run({ key: 'scope', force: true, start })
-      const stuckRejection = expect(stuck).rejects.toMatchObject({ name: 'AbortError' })
       await Promise.resolve()
 
       vi.advanceTimersByTime(5_000)
       const retry = coordinator.run({ key: 'scope', force: true, start })
       await Promise.resolve()
 
-      await stuckRejection
       expect(signals[0]?.aborted).toBe(true)
       expect(start).toHaveBeenCalledTimes(2)
       resolveSecond?.(EMPTY_RESULT)
-      await expect(retry).resolves.toEqual(EMPTY_RESULT)
+      // The caller stranded on the hung scan rides the replacement out rather
+      // than being told its own refresh was cancelled.
+      await expect(Promise.all([stuck, retry])).resolves.toEqual([EMPTY_RESULT, EMPTY_RESULT])
     } finally {
       vi.useRealTimers()
     }

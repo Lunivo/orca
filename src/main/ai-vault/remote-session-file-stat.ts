@@ -1,7 +1,7 @@
 import type { AiVaultAgent, AiVaultScanIssue } from '../../shared/ai-vault-types'
 import type { ExecutionHostId } from '../../shared/execution-host'
 import type { FileStat } from '../providers/types'
-import { throwIfRemoteSessionScanCancelled } from './remote-session-scan-cancellation'
+import { throwIfAiVaultScanCancelled } from './ai-vault-scan-cancellation'
 import { recordRemoteSessionScanIssue } from './remote-session-scan-issues'
 import type { RemoteSessionFilesystemProvider } from './remote-session-scanner-types'
 import type { FileWithMtime } from './session-scanner-types'
@@ -16,9 +16,9 @@ export async function statRemoteSessionFile(
   options?: { missingIsExpected?: boolean; signal?: AbortSignal }
 ): Promise<FileWithMtime | null> {
   try {
-    throwIfRemoteSessionScanCancelled(options?.signal)
+    throwIfAiVaultScanCancelled(options?.signal)
     const stat = await provider.stat(path)
-    throwIfRemoteSessionScanCancelled(options?.signal)
+    throwIfAiVaultScanCancelled(options?.signal)
     const mtimeMs = remoteSessionMtimeMs(stat)
     return {
       path,
@@ -30,7 +30,7 @@ export async function statRemoteSessionFile(
       ...(typeof stat.nlink === 'number' ? { nlink: stat.nlink } : {})
     }
   } catch (error) {
-    throwIfRemoteSessionScanCancelled(options?.signal)
+    throwIfAiVaultScanCancelled(options?.signal)
     if (!options?.missingIsExpected || !isMissingRemoteSessionPathError(error)) {
       recordRemoteSessionScanIssue(issues, {
         executionHostId,

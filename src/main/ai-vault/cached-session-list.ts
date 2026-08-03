@@ -59,6 +59,9 @@ export async function listAiVaultSessions(
         scopePaths: args?.scopePaths,
         additionalCodexSessionsDirs,
         wslHomeDirs: await getAiVaultWslHomeDirs(),
+        // Cancelled/superseded callers must stop the parse, not just stop
+        // waiting for it — the scan owns hundreds of transcript reads.
+        signal: scanSignal,
         // Why: this scan is always host-local; callers addressing this host by a
         // runtime id get the result restamped at the RPC edge, never rescanned.
         executionHostId: LOCAL_EXECUTION_HOST_ID

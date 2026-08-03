@@ -40,6 +40,9 @@ export type AiVaultScanOptions = {
   scopePaths?: readonly string[]
   platform?: NodeJS.Platform
   executionHostId?: ExecutionHostId
+  // Superseded/cancelled scans stop between parse batches instead of parsing
+  // every remaining transcript for a caller that already left.
+  signal?: AbortSignal
 }
 
 export type FileWithMtime = {

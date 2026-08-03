@@ -70,7 +70,7 @@ const aiVaultSessionSchema = z.object({
 const aiVaultScanIssueSchema = z.object({
   executionHostId: executionHostIdSchema.optional(),
   agent: z.enum(AI_VAULT_AGENTS),
-  kind: z.enum(['host', 'scope']).optional(),
+  kind: z.enum(['host', 'scope', 'notice']).optional(),
   path: z.string(),
   message: z.string()
 })

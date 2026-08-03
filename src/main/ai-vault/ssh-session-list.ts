@@ -10,14 +10,29 @@ import {
   SSH_FILESYSTEM_PROVIDER_UNAVAILABLE_MESSAGE
 } from '../providers/ssh-filesystem-dispatch'
 import { getActiveSshAiVaultHostInfo, requestActiveSshAiVaultSessionList } from '../ipc/ssh'
+import { isSshMuxRequestTimeoutError } from '../ssh/ssh-channel-multiplexer'
 import { scanRemoteAiVaultSessions } from './remote-session-scanner'
 import { parseAiVaultListResult } from './session-list-result-validation'
 import { aiVaultScanIssueResult, restampAiVaultListResult } from './session-list-results'
 
+/** Bounds one SSH host leg. `relayTimeoutMs` caps the relay round trip alone;
+ * `timeoutMs` caps the whole leg, including the legacy filesystem crawl. */
+export type SshAiVaultScanBudget = {
+  signal?: AbortSignal
+  timeoutMs?: number
+  relayTimeoutMs?: number
+}
+
+// Why: a relay that was given a real scan budget and still timed out will not
+// answer faster over the slower filesystem crawl, so that leg reports a host
+// issue. A relay cut short below this never got a fair attempt — those fall
+// back rather than emptying a healthy host's sessions (#12178 follow-up).
+const MEANINGFUL_RELAY_SCAN_ATTEMPT_MS = 10_000
+
 export async function scanSshAiVaultSessions(
   targetId: string,
   args?: AiVaultListArgs,
-  options: { signal?: AbortSignal; timeoutMs?: number } = {}
+  options: SshAiVaultScanBudget = {}
 ): Promise<AiVaultListResult> {
   const executionHostId = toSshExecutionHostId(targetId)
   // Why: in `all` scope every host leg is awaited together, so an unexpected
@@ -36,7 +51,7 @@ async function scanOneSshHost(
   targetId: string,
   executionHostId: `ssh:${string}`,
   args: AiVaultListArgs | undefined,
-  options: { signal?: AbortSignal; timeoutMs?: number }
+  options: SshAiVaultScanBudget
 ): Promise<AiVaultListResult> {
   const startedAt = Date.now()
   // Both legs scan the same capped set, so the fallback can't quietly scan more
@@ -44,6 +59,7 @@ async function scanOneSshHost(
   const scopePaths = args?.scopePaths?.slice(0, AI_VAULT_SCOPE_PATHS_MAX_COUNT)
   const scopePathsTruncated = (args?.scopePaths?.length ?? 0) > AI_VAULT_SCOPE_PATHS_MAX_COUNT
   let relayError: unknown
+  const relayTimeoutMs = options.relayTimeoutMs ?? options.timeoutMs
   try {
     const params = {
       limit: args?.limit,
@@ -52,8 +68,11 @@ async function scanOneSshHost(
       ...(scopePathsTruncated ? { scopePathsTruncated: true } : {})
     }
     const relayResult =
-      options.signal || options.timeoutMs !== undefined
-        ? await requestActiveSshAiVaultSessionList(targetId, params, options)
+      options.signal || relayTimeoutMs !== undefined
+        ? await requestActiveSshAiVaultSessionList(targetId, params, {
+            signal: options.signal,
+            timeoutMs: relayTimeoutMs
+          })
         : await requestActiveSshAiVaultSessionList(targetId, params)
     if (relayResult !== null) {
       return restampAiVaultListResult(parseAiVaultListResult(relayResult), executionHostId)
@@ -62,7 +81,10 @@ async function scanOneSshHost(
     if (isAbortError(error)) {
       throw error
     }
-    if (isRelayScanTimeout(error)) {
+    if (
+      isSshMuxRequestTimeoutError(error) &&
+      (relayTimeoutMs === undefined || relayTimeoutMs >= MEANINGFUL_RELAY_SCAN_ATTEMPT_MS)
+    ) {
       return sshScanIssueResult(executionHostId, targetId, errorMessage(error))
     }
     relayError = error
@@ -103,7 +125,10 @@ async function scanOneSshHost(
   const scopeIssues = scopePathsTruncated
     ? [scopeTruncationIssue(executionHostId, hostInfo.remoteHome)]
     : []
-  if (!relayError || fallbackResult.sessions.length > 0 || fallbackResult.issues.length === 0) {
+  // An empty remote home and "the relay method failed and the crawl found
+  // nothing" look identical, so a fallback that recovered nothing still reports
+  // the relay error instead of presenting a broken relay as an empty host.
+  if (!relayError || fallbackResult.sessions.length > 0) {
     return { ...fallbackResult, issues: [...fallbackResult.issues, ...scopeIssues] }
   }
   return {
@@ -182,10 +207,6 @@ function sshScanIssueResult(
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError'
-}
-
-function isRelayScanTimeout(error: unknown): boolean {
-  return error instanceof Error && error.message.includes('timed out after')
 }
 
 function errorMessage(error: unknown): string {

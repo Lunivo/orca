@@ -172,7 +172,7 @@ describe('Agent Session History scan coalescing', () => {
     ).rejects.toThrow('transcript root is unreadable')
   })
 
-  it('preempts a non-forced same-scope scan for a forced refresh', async () => {
+  it('re-joins a preempted same-scope caller onto the forced refresh', async () => {
     const signals: AbortSignal[] = []
     let resolveForced: ((result: AiVaultListResult) => void) | undefined
     mocks.requestActiveSshAiVaultSessionList.mockImplementation(
@@ -188,7 +188,6 @@ describe('Agent Session History scan coalescing', () => {
       }
     )
     const first = _internals.listAiVaultSessions({ executionHostScope: 'ssh:dev-box' })
-    const firstRejection = expect(first).rejects.toMatchObject({ name: 'AbortError' })
     await vi.waitFor(() => expect(signals).toHaveLength(1))
 
     const forced = _internals.listAiVaultSessions({
@@ -197,10 +196,10 @@ describe('Agent Session History scan coalescing', () => {
     })
     await vi.waitFor(() => expect(signals).toHaveLength(2))
 
-    await firstRejection
     expect(signals[0]?.aborted).toBe(true)
     resolveForced?.(EMPTY_RESULT)
-    await expect(forced).resolves.toEqual(EMPTY_RESULT)
+    // Another window's Refresh must not surface as this caller's cancellation.
+    await expect(Promise.all([first, forced])).resolves.toEqual([EMPTY_RESULT, EMPTY_RESULT])
   })
 })
 

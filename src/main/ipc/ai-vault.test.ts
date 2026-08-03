@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AiVaultListResult, AiVaultSession } from '../../shared/ai-vault-types'
 import type { IFilesystemProvider } from '../providers/types'
 import { getRemoteHostPlatform } from '../ssh/ssh-remote-platform'
+import { SSH_MUX_REQUEST_TIMEOUT_CODE } from '../ssh/ssh-channel-multiplexer'
 
 const mocks = vi.hoisted(() => ({
   scanAiVaultSessions: vi.fn(),
@@ -188,9 +189,7 @@ describe('listAiVaultSessions host routing', () => {
   })
 
   it('does not start a second remote crawl after the relay scan budget expires', async () => {
-    mocks.requestActiveSshAiVaultSessionList.mockRejectedValue(
-      new Error('Request "aiVault.listSessions" timed out after 130000ms')
-    )
+    mocks.requestActiveSshAiVaultSessionList.mockRejectedValue(relayTimeoutError())
 
     const scanned = await _internals.listAiVaultSessions({
       executionHostScope: 'ssh:dev-box'
@@ -202,9 +201,7 @@ describe('listAiVaultSessions host routing', () => {
   })
 
   it('does not cache a host-level relay failure', async () => {
-    mocks.requestActiveSshAiVaultSessionList.mockRejectedValue(
-      new Error('Request "aiVault.listSessions" timed out after 130000ms')
-    )
+    mocks.requestActiveSshAiVaultSessionList.mockRejectedValue(relayTimeoutError())
 
     await _internals.listAiVaultSessions({ executionHostScope: 'ssh:dev-box' })
     await _internals.listAiVaultSessions({ executionHostScope: 'ssh:dev-box' })
@@ -260,7 +257,7 @@ describe('listAiVaultSessions host routing', () => {
     expect(mocks.requestActiveSshAiVaultSessionList).toHaveBeenCalledWith(
       'dev-box',
       expect.any(Object),
-      expect.objectContaining({ timeoutMs: 3_000 })
+      expect.objectContaining({ timeoutMs: 15_000 })
     )
     expect(result.sessions.map((entry) => entry.executionHostId)).toEqual(['ssh:dev-box', 'local'])
   })
@@ -606,6 +603,14 @@ function hostInfo(targetId: string) {
     remoteHome: '/home/ada',
     hostPlatform: getRemoteHostPlatform('linux-x64')
   }
+}
+
+/** Mirrors the multiplexer's typed timeout: callers branch on the code, not on
+ * the message text. */
+function relayTimeoutError(): Error {
+  return Object.assign(new Error('Request "aiVault.listSessions" timed out after 130000ms'), {
+    code: SSH_MUX_REQUEST_TIMEOUT_CODE
+  })
 }
 
 function result(sessions: AiVaultSession[]): AiVaultListResult {

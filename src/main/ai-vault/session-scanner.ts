@@ -39,6 +39,7 @@ import type {
   SessionParseResult
 } from './session-scanner-types'
 import { clampPositiveInteger, errorMessage } from './session-scanner-values'
+import { throwIfAiVaultScanCancelled } from './ai-vault-scan-cancellation'
 
 const DEFAULT_LIMIT = 1000
 const DEFAULT_SCAN_LIMIT_PER_AGENT = 1000
@@ -72,8 +73,10 @@ export async function scanAiVaultSessions(
     const antigravityWorkspaceResolver = createAntigravityWorkspaceResolver(readOptionalTextFile)
     // Why: persisted entries must be seeded before any candidate is parsed, or
     // the cold scan gains nothing from the cache file (#9210).
+    throwIfAiVaultScanCancelled(options.signal)
     await ensureSessionParseCacheLoaded()
     const discoveries = await discoverAiVaultSessionSources({ options, limitPerAgent, issues })
+    throwIfAiVaultScanCancelled(options.signal)
 
     const candidates = dedupeCodexRolloutFileAliases(
       discoveries
@@ -112,6 +115,7 @@ export async function scanAiVaultSessions(
       executionHostId,
       issues,
       parseStats,
+      signal: options.signal,
       antigravityWorkspaceResolver
     })
 
@@ -126,7 +130,8 @@ export async function scanAiVaultSessions(
       platform,
       executionHostId,
       issues,
-      parseStats
+      parseStats,
+      signal: options.signal
     })
 
     span.setAttribute('candidates', candidates.length)
@@ -174,6 +179,7 @@ async function scanInScopeSessions(args: {
   executionHostId: ExecutionHostId
   issues: AiVaultScanIssue[]
   parseStats: SessionParseStats
+  signal?: AbortSignal
 }): Promise<AiVaultSession[]> {
   if (args.scopePaths.length === 0) {
     return []
@@ -201,7 +207,8 @@ async function scanInScopeSessions(args: {
     platform: args.platform,
     executionHostId: args.executionHostId,
     issues: args.issues,
-    parseStats: args.parseStats
+    parseStats: args.parseStats,
+    signal: args.signal
   })
 }
 
@@ -212,12 +219,14 @@ async function parseSessionCandidates(args: {
   executionHostId: ExecutionHostId
   issues: AiVaultScanIssue[]
   parseStats: SessionParseStats
+  signal?: AbortSignal
   antigravityWorkspaceResolver?: AntigravityWorkspaceResolver
 }): Promise<AiVaultSession[]> {
   const sessions: AiVaultSession[] = []
   let index = 0
 
   while (index < args.candidates.length) {
+    throwIfAiVaultScanCancelled(args.signal)
     if (canStopParsingSessions(sessions, args.limit, args.candidates[index]?.file.mtimeMs)) {
       break
     }
@@ -255,6 +264,9 @@ async function parseSessionCandidates(args: {
     index += batchSize
   }
 
+  // An abort can land while the final batch settles; observe it here so a
+  // partial parse is never cached or returned as a complete scan.
+  throwIfAiVaultScanCancelled(args.signal)
   return sessions
 }
 
