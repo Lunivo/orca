@@ -121,7 +121,11 @@ export function formatLoadFailureRecoveryHint(
   meta: LoadFailureMeta,
   loadError?: BrowserLoadErrorLike
 ): string | null {
-  if (!meta.isLocalhostLike || (loadError && isChromiumCertificateErrorCode(loadError.code))) {
+  if (
+    !meta.isLocalhostLike ||
+    loadError?.code === BROWSER_GUEST_RECOVERY_ERROR_CODE ||
+    (loadError && isChromiumCertificateErrorCode(loadError.code))
+  ) {
     return null
   }
   return 'If this should be a local app, make sure the server is running and listening on the expected port.'

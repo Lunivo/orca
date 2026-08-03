@@ -118,16 +118,17 @@ describe('browser notice formatting', () => {
   })
 
   it('preserves the explicit guest recovery failure copy', () => {
+    const loadError = {
+      code: BROWSER_GUEST_RECOVERY_ERROR_CODE,
+      description: 'The browser page stopped unexpectedly. Retry to restore it.',
+      validatedUrl: 'http://localhost:3000'
+    }
     expect(
-      formatLoadFailureDescription(
-        {
-          code: BROWSER_GUEST_RECOVERY_ERROR_CODE,
-          description: 'The browser page stopped unexpectedly. Retry to restore it.',
-          validatedUrl: 'https://example.com'
-        },
-        { host: 'example.com', isLocalhostLike: false }
-      )
+      formatLoadFailureDescription(loadError, { host: 'localhost:3000', isLocalhostLike: true })
     ).toBe('The browser page stopped unexpectedly. Retry to restore it.')
+    expect(
+      formatLoadFailureRecoveryHint({ host: 'localhost:3000', isLocalhostLike: true }, loadError)
+    ).toBeNull()
   })
 
   it('formats certificate failures without local-server recovery advice', () => {

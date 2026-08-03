@@ -30,6 +30,7 @@
       "certificateProceedFailed": "Orca could not approve this certificate request. Retry the page and try again."
     },
     "guestRecovery": {
+      "title": "Browser page stopped",
       "failed": "The browser page stopped unexpectedly. Retry to restore it."
     }
   },
