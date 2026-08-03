@@ -23,7 +23,12 @@ export type RuntimeAiVaultScanOptions = {
   timeoutMs?: number
 }
 
-const aiVaultPrepareSessionResumeResultSchema = z.object({ useRealCodexHome: z.boolean() })
+// Why: zod strips unknown keys, so the repin home must be declared or the
+// parent would silently drop it and resume under the wrong account's home.
+const aiVaultPrepareSessionResumeResultSchema = z.object({
+  useRealCodexHome: z.boolean(),
+  substituteCodexHome: z.string().optional()
+})
 
 export function getSavedRuntimeAiVaultHostInfos(
   userDataPath: string

@@ -49,6 +49,10 @@ const aiVaultSessionSchema = z.object({
   messageCount: z.number(),
   totalTokens: z.number(),
   previewMessages: z.array(sessionPreviewMessageSchema),
+  // zod strips undeclared keys, so every optional field has to be listed or the
+  // parent silently drops it from every runtime host's sessions.
+  previewMessagesTruncated: z.boolean().optional(),
+  firstUserPrompt: z.string().nullable().optional(),
   lastUserPrompt: z.string().nullable().optional(),
   queuedMessageCount: z.number().default(0),
   subagentTranscriptCount: z.number().default(0),
