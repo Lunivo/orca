@@ -1,6 +1,12 @@
 import type React from 'react'
 import type { AiVaultListResult } from '../../../../shared/ai-vault-types'
-import { aiVaultScanNoticeIssues, blockingAiVaultScanIssue } from './ai-vault-scan-issue-state'
+import {
+  aiVaultScanNoticeIssues,
+  blockingAiVaultScanIssue,
+  skippedAiVaultTranscriptCount,
+  skippedAiVaultTranscriptReasons
+} from './ai-vault-scan-issue-state'
+import { translate } from '@/i18n/i18n'
 
 // Messages are scanner-authored (host name, remote path, cap), so they render raw
 // rather than through a catalog key.
@@ -10,6 +16,7 @@ export function AiVaultScanIssueBanners({
   scanResult: AiVaultListResult | null
 }): React.JSX.Element {
   const blocking = blockingAiVaultScanIssue(scanResult)
+  const skippedTranscriptCount = skippedAiVaultTranscriptCount(scanResult)
 
   return (
     <>
@@ -26,6 +33,23 @@ export function AiVaultScanIssueBanners({
           }`}
         >
           {issue.message}
+        </div>
+      ))}
+      {skippedTranscriptCount > 0 ? (
+        <div className="border-b border-sidebar-border px-3 py-1.5 text-[11px] text-muted-foreground">
+          {translate(
+            'auto.components.right.sidebar.AiVaultPanel.transcriptsSkipped',
+            '{{count}} transcript skipped',
+            { count: skippedTranscriptCount }
+          )}
+        </div>
+      ) : null}
+      {skippedAiVaultTranscriptReasons(scanResult).map((reason) => (
+        <div
+          key={reason}
+          className="border-b border-sidebar-border px-3 py-1.5 text-[11px] text-muted-foreground"
+        >
+          {reason}
         </div>
       ))}
     </>

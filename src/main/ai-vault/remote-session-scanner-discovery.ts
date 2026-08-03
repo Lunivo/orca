@@ -130,6 +130,7 @@ function recordRemoteDirectoryIssue(
     recordRemoteSessionScanIssue(issues, {
       executionHostId,
       agent: source.agent,
+      kind: 'host',
       path,
       message: errorMessage(err)
     })

@@ -5,6 +5,7 @@ export const SSH_AI_VAULT_SCOPE_PATH_MAX_LENGTH = 4096
 
 export type SshAiVaultRelayListParams = {
   limit?: number
+  force?: boolean
   scopePaths?: string[]
   scopePathsTruncated?: boolean
 }

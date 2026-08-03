@@ -1,7 +1,6 @@
 import { lstat, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import type { AiVaultListResult } from '../shared/ai-vault-types'
-import { AI_VAULT_SCOPE_PATHS_MAX_COUNT } from '../shared/ai-vault-types'
+import { AI_VAULT_SCOPE_PATHS_MAX_COUNT, type AiVaultListResult } from '../shared/ai-vault-types'
 import { LOCAL_EXECUTION_HOST_ID } from '../shared/execution-host'
 import {
   SSH_AI_VAULT_LIST_LIMIT_MAX,
@@ -11,8 +10,7 @@ import {
 } from '../shared/ssh-ai-vault-relay'
 import { scanRemoteAiVaultSessions } from '../main/ai-vault/remote-session-scanner'
 import type { RemoteSessionFilesystemProvider } from '../main/ai-vault/remote-session-scanner-types'
-import { getRemoteHostPlatform } from '../main/ssh/ssh-remote-platform'
-import type { RemoteHostPlatform } from '../main/ssh/ssh-remote-platform'
+import { getRemoteHostPlatform, type RemoteHostPlatform } from '../main/ssh/ssh-remote-platform'
 import { parseUnameToRelayPlatform } from '../main/ssh/relay-protocol'
 import { readRelayFileContent } from './fs-handler-file-read'
 import { relayLogLine } from './relay-diagnostic-log'
@@ -59,7 +57,12 @@ export class AiVaultHandler {
   ): Promise<AiVaultListResult> {
     const params = normalizeSshAiVaultRelayListParams(rawParams)
     const result = await this.scanCoordinator.run({
-      key: JSON.stringify(params),
+      key: JSON.stringify({
+        limit: params.limit,
+        scopePaths: params.scopePaths,
+        scopePathsTruncated: params.scopePathsTruncated
+      }),
+      force: params.force,
       signal,
       start: (scanSignal) =>
         this.scanRemoteSessions({
@@ -114,6 +117,7 @@ export function normalizeSshAiVaultRelayListParams(
     (Array.isArray(params.scopePaths) && params.scopePaths.length > AI_VAULT_SCOPE_PATHS_MAX_COUNT)
   return {
     ...(limit === undefined ? {} : { limit }),
+    ...(params.force === true ? { force: true } : {}),
     ...(scopePaths === undefined ? {} : { scopePaths }),
     ...(scopePathsTruncated ? { scopePathsTruncated: true } : {})
   }

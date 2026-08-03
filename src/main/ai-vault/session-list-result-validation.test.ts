@@ -19,8 +19,39 @@ describe('parseAiVaultListResult', () => {
     )
   })
 
+  it('preserves the optional session fields the panel renders', () => {
+    const parsed = parseAiVaultListResult({
+      sessions: [
+        {
+          ...validSession(),
+          previewMessagesTruncated: true,
+          firstUserPrompt: 'first',
+          lastUserPrompt: 'last'
+        }
+      ],
+      issues: [],
+      scannedAt: '2026-07-27T00:00:00.000Z'
+    })
+
+    expect(parsed.sessions[0]).toMatchObject({
+      previewMessagesTruncated: true,
+      firstUserPrompt: 'first',
+      lastUserPrompt: 'last'
+    })
+  })
+
   it('rejects a malformed result envelope', () => {
     expect(() => parseAiVaultListResult({ sessions: [] })).toThrow()
+  })
+
+  it('rejects a nonempty sessions array when every row is invalid', () => {
+    expect(() =>
+      parseAiVaultListResult({
+        sessions: [{ id: 42 }, null],
+        issues: [],
+        scannedAt: '2026-07-27T00:00:00.000Z'
+      })
+    ).toThrow('all supplied Agent Session History sessions were invalid')
   })
 })
 

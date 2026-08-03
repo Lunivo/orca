@@ -14,14 +14,17 @@ import {
 } from './codex-session-root-dedup'
 import { discoverRemoteSourceCandidates } from './remote-session-scanner-discovery'
 import { remoteSessionSources } from './remote-session-scanner-sources'
-import type { RemoteScannerContext, RemoteSessionCandidate } from './remote-session-scanner-types'
+import type {
+  RemoteScannerContext,
+  RemoteSessionCandidate,
+  RemoteSessionFilesystemProvider
+} from './remote-session-scanner-types'
 import { sessionSortTime } from './session-scanner-accumulator'
 import { createAntigravityWorkspaceResolver } from './session-scanner-antigravity-history'
 import { errorMessage } from './session-scanner-values'
 import { mapRemoteScanBatches } from './remote-session-scan-batching'
 import { throwIfRemoteSessionScanCancelled } from './remote-session-scan-cancellation'
 import { recordRemoteSessionScanIssue } from './remote-session-scan-issues'
-import type { RemoteSessionFilesystemProvider } from './remote-session-scanner-types'
 
 const DEFAULT_REMOTE_SCAN_LIMIT = 1000
 const REMOTE_SCAN_CONCURRENCY = 8
@@ -131,6 +134,9 @@ async function parseRemoteSessionCandidates(args: {
     await yieldToEventLoop()
   }
 
+  // The loop can terminate on the yield after its final batch, so re-check
+  // rather than letting a cancelled scan return a partial parse as a success.
+  throwIfRemoteSessionScanCancelled(args.context.signal)
   return { sessions, parsedFilePaths }
 }
 

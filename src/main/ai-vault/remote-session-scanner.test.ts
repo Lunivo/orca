@@ -404,11 +404,13 @@ describe('scanRemoteAiVaultSessions', () => {
       expect.arrayContaining([
         expect.objectContaining({
           agent: 'antigravity',
+          kind: 'host',
           path: brainDir,
           message: expect.stringContaining('EACCES')
         }),
         expect.objectContaining({
           agent: 'claude',
+          kind: 'host',
           path: claudeProjectDir,
           message: expect.stringContaining('ECONNRESET')
         })

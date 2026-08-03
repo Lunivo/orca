@@ -20,6 +20,25 @@ export async function scanSshAiVaultSessions(
   options: { signal?: AbortSignal; timeoutMs?: number } = {}
 ): Promise<AiVaultListResult> {
   const executionHostId = toSshExecutionHostId(targetId)
+  // Why: in `all` scope every host leg is awaited together, so an unexpected
+  // throw here (not a caller cancellation) would discard the local results too.
+  try {
+    return await scanOneSshHost(targetId, executionHostId, args, options)
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw error
+    }
+    return sshScanIssueResult(executionHostId, targetId, errorMessage(error))
+  }
+}
+
+async function scanOneSshHost(
+  targetId: string,
+  executionHostId: `ssh:${string}`,
+  args: AiVaultListArgs | undefined,
+  options: { signal?: AbortSignal; timeoutMs?: number }
+): Promise<AiVaultListResult> {
+  const startedAt = Date.now()
   // Both legs scan the same capped set, so the fallback can't quietly scan more
   // paths — or skip the truncation notice — than the relay leg would.
   const scopePaths = args?.scopePaths?.slice(0, AI_VAULT_SCOPE_PATHS_MAX_COUNT)
@@ -28,6 +47,7 @@ export async function scanSshAiVaultSessions(
   try {
     const params = {
       limit: args?.limit,
+      ...(args?.force === true ? { force: true } : {}),
       scopePaths,
       ...(scopePathsTruncated ? { scopePathsTruncated: true } : {})
     }
@@ -56,15 +76,30 @@ export async function scanSshAiVaultSessions(
       relayError ? errorMessage(relayError) : SSH_FILESYSTEM_PROVIDER_UNAVAILABLE_MESSAGE
     )
   }
-  const fallbackResult = await scanRemoteAiVaultSessions({
-    provider,
-    executionHostId,
-    remoteHome: hostInfo.remoteHome,
-    hostPlatform: hostInfo.hostPlatform,
-    limit: args?.limit,
-    scopePaths,
-    signal: options.signal
+  // Why: `timeoutMs` bounded only the relay round trip, so a host on a relay
+  // without the list method fell through to the unbounded desktop crawl and one
+  // stalled SSH file stream could hold every other host's results hostage.
+  const fallbackResult = await scanRemoteSessionsWithinBudget({
+    scan: (signal) =>
+      scanRemoteAiVaultSessions({
+        provider,
+        executionHostId,
+        remoteHome: hostInfo.remoteHome,
+        hostPlatform: hostInfo.hostPlatform,
+        limit: args?.limit,
+        scopePaths,
+        signal
+      }),
+    signal: options.signal,
+    remainingMs: remainingScanBudgetMs(options.timeoutMs, startedAt)
   })
+  if (!fallbackResult) {
+    return sshScanIssueResult(
+      executionHostId,
+      targetId,
+      `Agent Session History scan timed out after ${options.timeoutMs}ms on this SSH host.`
+    )
+  }
   const scopeIssues = scopePathsTruncated
     ? [scopeTruncationIssue(executionHostId, hostInfo.remoteHome)]
     : []
@@ -78,6 +113,48 @@ export async function scanSshAiVaultSessions(
       ...fallbackResult.issues,
       ...scopeIssues
     ]
+  }
+}
+
+/** Budget left for the legacy crawl after the relay attempt spent part of it. */
+function remainingScanBudgetMs(timeoutMs: number | undefined, startedAt: number): number | null {
+  if (timeoutMs === undefined) {
+    return null
+  }
+  return Math.max(0, timeoutMs - (Date.now() - startedAt))
+}
+
+/** Runs the legacy crawl under `remainingMs`; resolves null once the budget is
+ * spent. Caller cancellation still propagates as an AbortError. */
+async function scanRemoteSessionsWithinBudget(args: {
+  scan: (signal?: AbortSignal) => Promise<AiVaultListResult>
+  signal?: AbortSignal
+  remainingMs: number | null
+}): Promise<AiVaultListResult | null> {
+  if (args.remainingMs === null) {
+    return args.scan(args.signal)
+  }
+  if (args.remainingMs === 0) {
+    return null
+  }
+  const controller = new AbortController()
+  const forwardAbort = (): void => controller.abort()
+  args.signal?.addEventListener('abort', forwardAbort, { once: true })
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, args.remainingMs)
+  try {
+    return await args.scan(controller.signal)
+  } catch (error) {
+    if (timedOut && !args.signal?.aborted) {
+      return null
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+    args.signal?.removeEventListener('abort', forwardAbort)
   }
 }
 

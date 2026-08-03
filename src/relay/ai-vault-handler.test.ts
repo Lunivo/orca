@@ -138,6 +138,41 @@ describe('AiVaultHandler', () => {
     await expect(second).resolves.toEqual(emptyResult())
   })
 
+  it('preempts a non-forced relay scan for a forced refresh', async () => {
+    const signals: AbortSignal[] = []
+    let resolveForced: ((result: AiVaultListResult) => void) | undefined
+    const scanRemoteSessions = vi.fn((args: { signal: AbortSignal }) => {
+      signals.push(args.signal)
+      return new Promise<AiVaultListResult>((resolve) => {
+        if (signals.length === 1) {
+          args.signal.addEventListener('abort', () => resolve(emptyResult()), { once: true })
+        } else {
+          resolveForced = resolve
+        }
+      })
+    })
+    const dispatcher = createMockDispatcher()
+    new AiVaultHandler(dispatcher.value, {
+      remoteHome: '/home/ada',
+      hostPlatform: getRemoteHostPlatform('linux-x64'),
+      scanRemoteSessions: scanRemoteSessions as never
+    })
+    const first = dispatcher.call(SSH_AI_VAULT_LIST_SESSIONS_METHOD, { limit: 20 })
+    const firstRejection = expect(first).rejects.toMatchObject({ name: 'AbortError' })
+    await vi.waitFor(() => expect(signals).toHaveLength(1))
+
+    const forced = dispatcher.call(SSH_AI_VAULT_LIST_SESSIONS_METHOD, {
+      limit: 20,
+      force: true
+    })
+    await vi.waitFor(() => expect(signals).toHaveLength(2))
+
+    await firstRejection
+    expect(signals[0]?.aborted).toBe(true)
+    resolveForced?.(emptyResult())
+    await expect(forced).resolves.toEqual(emptyResult())
+  })
+
   it('soft-disables the method instead of aborting relay startup on an unsupported platform', () => {
     const platform = Object.getOwnPropertyDescriptor(process, 'platform')
     Object.defineProperty(process, 'platform', { value: 'freebsd', configurable: true })

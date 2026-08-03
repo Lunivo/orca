@@ -225,6 +225,19 @@ describe('listAiVaultSessions host routing', () => {
     expect(scanned.sessions).toEqual([expect.objectContaining({ sessionId: 'remote-session' })])
   })
 
+  it('falls back when a nonempty relay sessions array contains no valid rows', async () => {
+    mocks.requestActiveSshAiVaultSessionList.mockResolvedValue({
+      sessions: [{ id: 42 }],
+      issues: [],
+      scannedAt: '2026-07-27T00:00:00.000Z'
+    })
+
+    const scanned = await _internals.listAiVaultSessions({ executionHostScope: 'ssh:dev-box' })
+
+    expect(mocks.scanRemoteAiVaultSessions).toHaveBeenCalledTimes(1)
+    expect(scanned.sessions).toEqual([expect.objectContaining({ sessionId: 'remote-session' })])
+  })
+
   it('uses the relay scan without requiring the fallback filesystem provider', async () => {
     mocks.getSshFilesystemProvider.mockReturnValue(undefined)
     mocks.requestActiveSshAiVaultSessionList.mockResolvedValue(
@@ -298,6 +311,50 @@ describe('listAiVaultSessions host routing', () => {
         agent: 'codex',
         path: 'runtime environments',
         message: 'runtime store is invalid'
+      })
+    ])
+  })
+
+  it('keeps SSH results when the local scan itself throws', async () => {
+    // Why: `all` awaits every leg together, so an unguarded local throw (parse
+    // cache load, WSL home resolution) would discard every host's sessions.
+    mocks.scanAiVaultSessions.mockRejectedValue(new Error('session parse cache is corrupt'))
+    registerAiVaultHandlers({
+      getActiveRuntimeAiVaultHostInfos: () => [],
+      scanRuntimeAiVaultSessions: mocks.scanRuntimeAiVaultSessions
+    })
+
+    const result = await _internals.listAiVaultSessions({ executionHostScope: 'all' })
+
+    expect(result.sessions.map((entry) => entry.executionHostId)).toEqual(['ssh:dev-box'])
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        executionHostId: 'local',
+        kind: 'host',
+        path: 'this computer',
+        message: 'session parse cache is corrupt'
+      })
+    ])
+  })
+
+  it('keeps local results when SSH host discovery fails', async () => {
+    mocks.getActiveSshAiVaultHostInfos.mockImplementation(() => {
+      throw new Error('relay session map is unavailable')
+    })
+    registerAiVaultHandlers({
+      getActiveRuntimeAiVaultHostInfos: () => [],
+      scanRuntimeAiVaultSessions: mocks.scanRuntimeAiVaultSessions
+    })
+
+    const result = await _internals.listAiVaultSessions({ executionHostScope: 'all' })
+
+    expect(mocks.scanAiVaultSessions).toHaveBeenCalledTimes(1)
+    expect(result.sessions.map((entry) => entry.executionHostId)).toEqual(['local'])
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        agent: 'codex',
+        path: 'SSH hosts',
+        message: 'relay session map is unavailable'
       })
     ])
   })
@@ -379,7 +436,9 @@ describe('listAiVaultSessions host routing', () => {
     })
 
     expect(relaySignal?.aborted).toBe(true)
-    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    // Resolved, not rejected: Electron logs every rejected handler, and a
+    // superseded scan is normal control flow rather than a failure.
+    await expect(pending).resolves.toMatchObject({ cancelled: true, sessions: [] })
   })
 })
 

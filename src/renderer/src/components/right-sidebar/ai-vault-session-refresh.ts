@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AiVaultListResult, AiVaultSession } from '../../../../shared/ai-vault-types'
+import {
+  isAiVaultScanCancelledError,
+  type AiVaultListResult,
+  type AiVaultSession
+} from '../../../../shared/ai-vault-types'
 import type { ExecutionHostScope } from '../../../../shared/execution-host'
 import { useAppStore } from '@/store'
 
@@ -24,6 +28,10 @@ function consumeForcedRescanBudget(): boolean {
 export function resetAiVaultForcedRescanThrottleForTest(): void {
   lastForcedRescanAt = 0
 }
+
+// Desktop IPC reports cancellation as a result, but the web/runtime RPC path
+// still rejects, so both shapes have to be recognised.
+export const isAiVaultScanCancellation = isAiVaultScanCancelledError
 
 type AiVaultRefreshArgs = { force?: boolean; background?: boolean }
 
@@ -97,7 +105,9 @@ export function useAiVaultSessionRefresh(
           force: args.force,
           requestToken: requestTokenRef.current
         })
-        if (!mountedRef.current || refreshIdRef.current !== refreshId) {
+        // A superseded scan resolves cancelled rather than rejecting, so the
+        // main-process log stays clean; its empty body must not be painted.
+        if (result.cancelled || !mountedRef.current || refreshIdRef.current !== refreshId) {
           return
         }
         // Why: host/scope changes queue a follow-up scan, but the older result
@@ -117,7 +127,11 @@ export function useAiVaultSessionRefresh(
         setScanResult(result)
         setSessions(result.sessions)
       } catch (err) {
+        // A cancelled scan is not a failure: another caller's forced refresh
+        // preempts the shared scan, and painting its abort would replace the
+        // list with an error the incoming scan is about to make obsolete.
         if (
+          !isAiVaultScanCancellation(err) &&
           mountedRef.current &&
           refreshIdRef.current === refreshId &&
           scanKey === currentScanScopeKey()

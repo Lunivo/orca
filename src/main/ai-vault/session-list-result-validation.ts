@@ -90,6 +90,9 @@ export function parseAiVaultListResult(value: unknown): AiVaultListResult {
     const parsed = aiVaultSessionSchema.safeParse(session)
     return parsed.success ? [parsed.data] : []
   })
+  if (envelope.data.sessions.length > 0 && sessions.length === 0) {
+    throw new Error('all supplied Agent Session History sessions were invalid')
+  }
   const issues = envelope.data.issues.flatMap((issue) => {
     const parsed = aiVaultScanIssueSchema.safeParse(issue)
     return parsed.success ? [parsed.data] : []

@@ -26,6 +26,12 @@ export function aiVaultScanIssueResult(args: {
   }
 }
 
+// A superseded scan has no findings to report; the flag tells the renderer to
+// keep the list it already has rather than paint this empty body.
+export function cancelledAiVaultListResult(): AiVaultListResult {
+  return { sessions: [], issues: [], scannedAt: new Date().toISOString(), cancelled: true }
+}
+
 // Why: the serving-side scan is host-local and cached once for every caller
 // (desktop parent, web, mobile), so callers that address this host by a runtime
 // id get the cached result restamped on the way out instead of a per-host scan.

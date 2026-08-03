@@ -15,5 +15,8 @@ export async function mapRemoteScanBatches<T, U>(
     results.push(...(await Promise.all(items.slice(index, index + concurrency).map(mapper))))
     await yieldToEventLoop()
   }
+  // An abort can land while the last batch yields, and empty inputs never enter
+  // the loop at all — observe it here so neither path returns as a success.
+  throwIfRemoteSessionScanCancelled(signal)
   return results
 }

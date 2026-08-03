@@ -7,6 +7,7 @@ import type { AgentStatusEntry } from '../../../../shared/agent-status-types'
 import type { AiVaultListResult } from '../../../../shared/ai-vault-types'
 import { useAppStore } from '@/store'
 import {
+  isAiVaultScanCancellation,
   resetAiVaultForcedRescanThrottleForTest,
   useAiVaultSessionRefresh
 } from './ai-vault-session-refresh'
@@ -39,6 +40,29 @@ async function fireWindowFocused(): Promise<void> {
 }
 
 const initialAppState = useAppStore.getInitialState()
+
+describe('isAiVaultScanCancellation', () => {
+  it('recognises a cancellation through the IPC error wrapper', () => {
+    expect(
+      isAiVaultScanCancellation(
+        new Error(
+          "Error invoking remote method 'aiVault:listSessions': Error: Agent Session History scan was cancelled"
+        )
+      )
+    ).toBe(true)
+  })
+
+  it('recognises an in-process AbortError', () => {
+    const error = new Error('aborted')
+    error.name = 'AbortError'
+    expect(isAiVaultScanCancellation(error)).toBe(true)
+  })
+
+  it('leaves a real scan failure reportable', () => {
+    expect(isAiVaultScanCancellation(new Error('SSH relay is not ready'))).toBe(false)
+    expect(isAiVaultScanCancellation('nope')).toBe(false)
+  })
+})
 
 const roots: Root[] = []
 let latest: ReturnType<typeof useAiVaultSessionRefresh> | null = null
@@ -303,6 +327,24 @@ describe('useAiVaultSessionRefresh refocus behavior', () => {
     await advance(THROTTLE_MS + 1)
     await fireWindowFocused()
     expect(latest?.scanResult).not.toBe(firstResult)
+  })
+
+  it('keeps the current list when a superseded scan resolves cancelled', async () => {
+    await renderHook()
+    await flushMicrotasks()
+    const applied = latest?.scanResult
+
+    listSessionsMock.mockResolvedValueOnce({
+      sessions: [],
+      issues: [],
+      scannedAt: '2026-07-01T00:00:09.000Z',
+      cancelled: true
+    })
+    await advance(THROTTLE_MS + 1)
+    await fireWindowFocused()
+
+    expect(latest?.scanResult).toBe(applied)
+    expect(latest?.error).toBeNull()
   })
 
   it('keeps the manual refresh button forcing a cache bypass', async () => {

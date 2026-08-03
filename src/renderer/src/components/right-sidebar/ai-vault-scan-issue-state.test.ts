@@ -3,7 +3,8 @@ import type { AiVaultListResult } from '../../../../shared/ai-vault-types'
 import {
   aiVaultScanNoticeIssues,
   blockingAiVaultScanIssue,
-  skippedAiVaultTranscriptCount
+  skippedAiVaultTranscriptCount,
+  skippedAiVaultTranscriptReasons
 } from './ai-vault-scan-issue-state'
 
 describe('blockingAiVaultScanIssue', () => {
@@ -40,6 +41,20 @@ describe('blockingAiVaultScanIssue', () => {
 })
 
 describe('aiVaultScanNoticeIssues', () => {
+  it('surfaces scope truncation without counting it as a skipped transcript', () => {
+    const scopeIssue = {
+      agent: 'codex' as const,
+      kind: 'scope' as const,
+      path: '/home/ada',
+      message: 'Only the first 64 project paths were scanned.'
+    }
+    const truncated = result([], [scopeIssue])
+
+    expect(blockingAiVaultScanIssue(truncated)).toBeNull()
+    expect(aiVaultScanNoticeIssues(truncated)).toEqual([scopeIssue])
+    expect(skippedAiVaultTranscriptCount(truncated)).toBe(0)
+  })
+
   it('keeps kinded issues as notices and counts only transcripts as skipped', () => {
     const hostIssue = {
       executionHostId: 'ssh:dev-box' as const,
@@ -78,6 +93,62 @@ describe('aiVaultScanNoticeIssues', () => {
   it('reports nothing before the first scan', () => {
     expect(aiVaultScanNoticeIssues(null)).toEqual([])
     expect(skippedAiVaultTranscriptCount(null)).toBe(0)
+  })
+})
+
+describe('skippedAiVaultTranscriptReasons', () => {
+  it('surfaces the file-too-large reason behind a skipped transcript', () => {
+    expect(
+      skippedAiVaultTranscriptReasons(
+        result(
+          [{ id: 'session' }],
+          [
+            {
+              agent: 'claude',
+              path: '/home/dev/.claude/projects/a/huge.jsonl',
+              message: 'File too large: 12.4MB exceeds 10MB limit'
+            }
+          ]
+        )
+      )
+    ).toEqual(['File too large: 12.4MB exceeds 10MB limit'])
+  })
+
+  it('leaves host and scope notices to their own rows', () => {
+    expect(
+      skippedAiVaultTranscriptReasons(
+        result(
+          [],
+          [
+            {
+              agent: 'codex',
+              kind: 'scope',
+              path: '/home/dev',
+              message: 'Only the first 64 project paths were scanned.'
+            },
+            { agent: 'codex', kind: 'host', path: 'dev-box', message: 'Reconnect the SSH target.' }
+          ]
+        )
+      )
+    ).toEqual([])
+  })
+
+  it('dedupes repeats and caps the list so a 500-issue scan stays readable', () => {
+    const issues = Array.from({ length: 40 }, (_unused, index) => ({
+      agent: 'codex' as const,
+      path: `/transcripts/${index}.jsonl`,
+      message: `Unreadable transcript ${index % 5}`
+    }))
+
+    expect(skippedAiVaultTranscriptReasons(result([], issues))).toEqual([
+      'Unreadable transcript 0',
+      'Unreadable transcript 1',
+      'Unreadable transcript 2'
+    ])
+  })
+
+  it('reports nothing before the first scan', () => {
+    expect(skippedAiVaultTranscriptReasons(null)).toEqual([])
   })
 })
 
