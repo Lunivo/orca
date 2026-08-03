@@ -110,6 +110,7 @@ describe('BrowserPane webview preferences', () => {
     staleWebview.setAttribute('partition', 'persist:orca-browser')
     staleContainer.appendChild(staleWebview)
     registryMocks.webviewRegistry.set('browser-page-1', staleWebview)
+    const requestedContainer = createContainer('requested')
     const replacementContainer = createContainer('replacement')
     const resolveContainer = vi.fn(() => replacementContainer)
     registryMocks.destroyPersistentWebview.mockImplementation(() => {
@@ -120,7 +121,7 @@ describe('BrowserPane webview preferences', () => {
 
     const ensuredWebview = ensureBrowserPageWebview({
       browserTabId: 'browser-page-1',
-      container: replacementContainer,
+      container: requestedContainer,
       inputLocked: false,
       webviewPartition: 'persist:orca-browser',
       resolveContainer
@@ -129,6 +130,7 @@ describe('BrowserPane webview preferences', () => {
     expect(registryMocks.destroyPersistentWebview).toHaveBeenCalledWith('browser-page-1', {
       preserveViewport: true
     })
+    expect(resolveContainer).toHaveBeenCalledTimes(1)
     expect(ensuredWebview?.container).toBe(replacementContainer)
     expect(replacementContainer.isConnected).toBe(true)
     expect(replacementContainer.lastElementChild).toBe(
