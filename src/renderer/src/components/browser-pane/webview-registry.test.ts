@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+const viewportMocks = vi.hoisted(() => ({
+  removeBrowserPageViewport: vi.fn()
+}))
+
+vi.mock('./browser-page-viewport', () => viewportMocks)
+
 type ListenerRecord = {
   type: string
   listener: EventListenerOrEventListenerObject
@@ -26,6 +32,7 @@ describe('webview registry drag listeners', () => {
     addedListeners = []
     removedListeners = []
     unregisterGuestMock = vi.fn()
+    viewportMocks.removeBrowserPageViewport.mockReset()
 
     vi.stubGlobal('window', {
       addEventListener: vi.fn(
@@ -158,7 +165,7 @@ describe('webview registry drag listeners', () => {
     expect(isBrowserPageRendererRecoveryPending('page-1')).toBe(false)
   })
 
-  it('preserves explicit page zoom only when replacing a failed guest', async () => {
+  it('preserves the viewport and zoom only while replacing a guest', async () => {
     const { destroyPersistentWebview, registerPersistentWebview, replacePersistentWebview } =
       await import('./webview-registry')
     const { getExplicitBrowserPageZoomLevel, rememberExplicitBrowserPageZoomLevel } =
@@ -166,12 +173,14 @@ describe('webview registry drag listeners', () => {
 
     registerPersistentWebview('page-1', createWebview())
     rememberExplicitBrowserPageZoomLevel('page-1', 1.5)
-    await replacePersistentWebview('page-1')
+    await replacePersistentWebview('page-1', { preserveViewport: true })
     expect(getExplicitBrowserPageZoomLevel('page-1')).toBe(1.5)
+    expect(viewportMocks.removeBrowserPageViewport).not.toHaveBeenCalled()
 
     registerPersistentWebview('page-1', createWebview())
     await destroyPersistentWebview('page-1')
     expect(getExplicitBrowserPageZoomLevel('page-1')).toBeNull()
+    expect(viewportMocks.removeBrowserPageViewport).toHaveBeenCalledWith('page-1')
   })
 
   it('keeps webviews in passthrough until every renderer drag releases', async () => {
