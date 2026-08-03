@@ -217,6 +217,9 @@ const EMPTY_WORKTREE_UNIFIED_TABS: AppState['unifiedTabsByWorktree'][string] = [
 const EMPTY_WORKTREE_TAB_GROUPS: AppState['groupsByWorktree'][string] = []
 const EMPTY_WORKTREE_OPEN_FILE_IDS: readonly string[] = []
 const mobileSessionPublicationEpoch = `renderer:${createBrowserUuid()}`
+// Why: the snapshot object main last acknowledged per worktree; anything still
+// identical is withheld from the graph payload instead of re-cloned across IPC.
+const publishedMobileSessionSnapshotByWorktree = new Map<string, RuntimeMobileSessionTabsSnapshot>()
 
 export function setRuntimeGraphStoreStateGetter(getter: (() => AppState) | null): void {
   getStoreState = getter
@@ -698,10 +701,13 @@ async function syncRuntimeGraph(): Promise<void> {
       .map((tab) => [tab.id, tab])
   )
   const generatedTitlesEnabled = state.settings?.tabAutoGenerateTitle === true
+  const mobileSessionTabs = buildMobileSessionTabSnapshots(state, systemPrefersDark)
+  const publication = partitionMobileSessionPublication(mobileSessionTabs)
   const graph: RuntimeSyncWindowGraph = {
     tabs: [],
     leaves: [],
-    mobileSessionTabs: buildMobileSessionTabSnapshots(state, systemPrefersDark)
+    mobileSessionTabs: publication.changed,
+    unchangedMobileSessionWorktrees: publication.unchangedWorktrees
   }
 
   for (const [tabId, registeredTab] of registeredTabs) {
@@ -811,6 +817,9 @@ async function syncRuntimeGraph(): Promise<void> {
 
   try {
     const result = await window.api.runtime.syncWindowGraph(graph)
+    // Why: only an acknowledged publication may be treated as delivered. A throw
+    // leaves the memo behind, so the retry resends every worktree in full.
+    commitMobileSessionPublication(mobileSessionTabs, result?.mobileSessionResyncWorktrees)
     const currentState = getStoreState()
     currentState?.setRuntimeAgentOrchestrationByPaneKey?.(result?.agentOrchestrationByPaneKey ?? {})
     for (const resolution of result?.nativeChatLaunchDraftResolutions ?? []) {
@@ -821,8 +830,50 @@ async function syncRuntimeGraph(): Promise<void> {
         })
       }
     }
+    if (result?.mobileSessionResyncWorktrees?.length) {
+      scheduleRuntimeGraphSync()
+    }
   } catch (error) {
     console.error('[runtime] Failed to sync renderer graph:', error)
+  }
+}
+
+function partitionMobileSessionPublication(snapshots: RuntimeMobileSessionTabsSnapshot[]): {
+  changed: RuntimeMobileSessionTabsSnapshot[]
+  unchangedWorktrees: string[]
+} {
+  const changed: RuntimeMobileSessionTabsSnapshot[] = []
+  const unchangedWorktrees: string[] = []
+  for (const snapshot of snapshots) {
+    // Why: buildMobileSessionTabSnapshots returns the cached object for a worktree
+    // it did not rebuild, so identity — not a deep compare — settles this.
+    if (publishedMobileSessionSnapshotByWorktree.get(snapshot.worktree) === snapshot) {
+      unchangedWorktrees.push(snapshot.worktree)
+    } else {
+      changed.push(snapshot)
+    }
+  }
+  return { changed, unchangedWorktrees }
+}
+
+function commitMobileSessionPublication(
+  snapshots: RuntimeMobileSessionTabsSnapshot[],
+  resyncWorktrees: string[] | undefined
+): void {
+  const published = new Set<string>()
+  for (const snapshot of snapshots) {
+    published.add(snapshot.worktree)
+    publishedMobileSessionSnapshotByWorktree.set(snapshot.worktree, snapshot)
+  }
+  for (const worktreeId of publishedMobileSessionSnapshotByWorktree.keys()) {
+    if (!published.has(worktreeId)) {
+      publishedMobileSessionSnapshotByWorktree.delete(worktreeId)
+    }
+  }
+  // Why: main dropped these after acknowledging them, so forget the delivery and
+  // let the scheduled resync republish them in full.
+  for (const worktreeId of resyncWorktrees ?? []) {
+    publishedMobileSessionSnapshotByWorktree.delete(worktreeId)
   }
 }
 

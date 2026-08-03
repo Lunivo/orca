@@ -5313,7 +5313,12 @@ export class OrcaRuntimeService {
     const previousLeaves = this.leaves
     this.tabs = new Map(graph.tabs.map((tab) => [tab.tabId, tab]))
     const lifecycleLeaves = this.reconcileMobileSessionRetirementFences(graph.leaves)
-    const changedMobileWorktrees = this.syncMobileSessionTabs(graph.mobileSessionTabs)
+    const mobileSessionResyncWorktrees = new Set<string>()
+    const changedMobileWorktrees = this.syncMobileSessionTabs(
+      graph.mobileSessionTabs,
+      graph.unchangedMobileSessionWorktrees,
+      mobileSessionResyncWorktrees
+    )
     const nextLeaves = new Map<string, RuntimeLeafRecord>()
     const graphSyncedAt = this.nextTitleObservationSequence()
 
@@ -5489,7 +5494,10 @@ export class OrcaRuntimeService {
     return {
       ...this.getStatus(),
       ...(agentOrchestrationByPaneKey ? { agentOrchestrationByPaneKey } : {}),
-      ...(nativeChatLaunchDraftResolutions.length > 0 ? { nativeChatLaunchDraftResolutions } : {})
+      ...(nativeChatLaunchDraftResolutions.length > 0 ? { nativeChatLaunchDraftResolutions } : {}),
+      ...(mobileSessionResyncWorktrees.size > 0
+        ? { mobileSessionResyncWorktrees: [...mobileSessionResyncWorktrees] }
+        : {})
     }
   }
 
@@ -28551,7 +28559,9 @@ export class OrcaRuntimeService {
   // Returns the worktrees whose stored snapshot object changed during this
   // sync, so the caller can fan out only actually-changed worktrees.
   private syncMobileSessionTabs(
-    snapshots: RuntimeMobileSessionTabsSnapshot[] | undefined
+    snapshots: RuntimeMobileSessionTabsSnapshot[] | undefined,
+    unchangedWorktreeIds?: string[],
+    resyncWorktreeIds: Set<string> = new Set()
   ): Set<string> {
     const changedWorktreeIds = new Set<string>()
     if (snapshots === undefined) {
@@ -28586,6 +28596,20 @@ export class OrcaRuntimeService {
       })
     }
     const nextWorktrees = new Set<string>()
+    // Why: the renderer withholds unchanged snapshots to keep the graph payload
+    // small, so these worktrees are still live and must not fall into the prune
+    // below. One main holds nothing for was dropped main-side after the renderer
+    // last published it; ask for a republish or its tabs stay gone until it changes.
+    for (const worktreeId of unchangedWorktreeIds ?? []) {
+      if (this.mobileSessionTabsByWorktree.has(worktreeId)) {
+        nextWorktrees.add(worktreeId)
+        continue
+      }
+      resyncWorktreeIds.add(worktreeId)
+      // Why: the accept gate compares against the renderer's last accepted pair,
+      // which outlives the dropped snapshot and would reject the republish.
+      this.acceptedRendererMobileSnapshotByWorktree.delete(worktreeId)
+    }
     for (const snapshot of snapshots) {
       nextWorktrees.add(snapshot.worktree)
       const existing = this.mobileSessionTabsByWorktree.get(snapshot.worktree)
