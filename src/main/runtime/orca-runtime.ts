@@ -2674,7 +2674,12 @@ export class OrcaRuntimeService {
   // resend (or stale) and is skipped without touching the stored entry.
   private acceptedRendererMobileSnapshotByWorktree = new Map<
     string,
-    { publicationEpoch: string; rendererVersion: number }
+    {
+      publicationEpoch: string
+      rendererVersion: number
+      rendererTabCount: number
+      rendererTabIdentityKeys: ReadonlySet<string>
+    }
   >()
   private clientSessionTabSelections = new ClientSessionTabSelectionStore()
   // Why: idempotency map for mobile terminal creation — a retried create with the
@@ -23142,6 +23147,7 @@ export class OrcaRuntimeService {
       store.removeWorktreeMeta(worktreeId)
     }
     this.mobileSessionTabsByWorktree.delete(worktreeId)
+    this.acceptedRendererMobileSnapshotByWorktree.delete(worktreeId)
     advertisedUrlWatcher.forgetWorktree(worktreeId)
     deleteWorktreeHistoryDir(worktreeId)
     this.closeHeadlessBrowserPagesForWorktree(worktreeId)
@@ -28596,16 +28602,34 @@ export class OrcaRuntimeService {
       })
     }
     const nextWorktrees = new Set<string>()
+    const incomingWorktreeIds = new Set(snapshots.map((snapshot) => snapshot.worktree))
     // Why: the renderer withholds unchanged snapshots to keep the graph payload
     // small, so these worktrees are still live and must not fall into the prune
-    // below. One main holds nothing for was dropped main-side after the renderer
-    // last published it; ask for a republish or its tabs stay gone until it changes.
+    // below. Ask for a republish when main no longer holds that accepted renderer
+    // publication or a formerly-preserved runtime tab has gone stale.
     for (const worktreeId of unchangedWorktreeIds ?? []) {
-      if (this.mobileSessionTabsByWorktree.has(worktreeId)) {
+      const existing = this.mobileSessionTabsByWorktree.get(worktreeId)
+      const accepted = this.acceptedRendererMobileSnapshotByWorktree.get(worktreeId)
+      if (existing) {
         nextWorktrees.add(worktreeId)
+      }
+      if (
+        existing &&
+        accepted &&
+        (existing.publicationEpoch === accepted.publicationEpoch ||
+          existing.publicationEpoch.startsWith(`${accepted.publicationEpoch}:headless-merge:`)) &&
+        existing.tabs.length >= accepted.rendererTabCount &&
+        (existing.tabs.length === accepted.rendererTabCount ||
+          !this.storedMobileSnapshotHasStalePreservedTab(
+            existing,
+            accepted.rendererTabIdentityKeys
+          ))
+      ) {
         continue
       }
-      resyncWorktreeIds.add(worktreeId)
+      if (!incomingWorktreeIds.has(worktreeId)) {
+        resyncWorktreeIds.add(worktreeId)
+      }
       // Why: the accept gate compares against the renderer's last accepted pair,
       // which outlives the dropped snapshot and would reject the republish.
       this.acceptedRendererMobileSnapshotByWorktree.delete(worktreeId)
@@ -28634,7 +28658,7 @@ export class OrcaRuntimeService {
         !(
           existing &&
           snapshot.snapshotVersion === accepted.rendererVersion &&
-          this.storedMobileSnapshotHasStalePreservedTab(existing, snapshot)
+          this.storedMobileSnapshotHasStalePreservedTab(existing, accepted.rendererTabIdentityKeys)
         )
       ) {
         continue
@@ -28658,7 +28682,11 @@ export class OrcaRuntimeService {
       )
       this.acceptedRendererMobileSnapshotByWorktree.set(snapshot.worktree, {
         publicationEpoch: snapshot.publicationEpoch,
-        rendererVersion: snapshot.snapshotVersion
+        rendererVersion: snapshot.snapshotVersion,
+        rendererTabCount: snapshot.tabs.length,
+        rendererTabIdentityKeys: new Set(
+          snapshot.tabs.flatMap((tab) => this.getMobileSessionSnapshotTabIdentityKeys(tab))
+        )
       })
     }
     for (const [worktreeId, existing] of [...this.mobileSessionTabsByWorktree.entries()]) {
@@ -28780,22 +28808,19 @@ export class OrcaRuntimeService {
   }
 
   // Why: the accepted-revision no-op gate must not fossilize preserved runtime
-  // tabs. A stored merged snapshot's tabs that are absent from the incoming
-  // renderer publication exist only via preservation; if any such tab no longer
+  // tabs. A stored merged snapshot's tabs absent from the accepted renderer
+  // publication exist only via preservation; if any such tab no longer
   // passes the preservation predicate (binding removed from the live PTY table
-  // and persisted session, or browser page closed), the stored snapshot is
-  // stale even though the renderer revision is unchanged.
+  // and persisted session, or browser page closed), the stored snapshot is stale.
   private storedMobileSnapshotHasStalePreservedTab(
     existing: RuntimeMobileSessionTabsSnapshot,
-    incoming: RuntimeMobileSessionTabsSnapshot
+    rendererTabIdentityKeys: ReadonlySet<string>
   ): boolean {
-    const incomingIds = new Set(
-      incoming.tabs.flatMap((tab) => this.getMobileSessionSnapshotTabIdentityKeys(tab))
-    )
     return existing.tabs.some(
       (tab) =>
-        !this.getMobileSessionSnapshotTabIdentityKeys(tab).some((id) => incomingIds.has(id)) &&
-        !this.shouldPreserveHeadlessMobileSessionTab(existing, tab)
+        !this.getMobileSessionSnapshotTabIdentityKeys(tab).some((id) =>
+          rendererTabIdentityKeys.has(id)
+        ) && !this.shouldPreserveHeadlessMobileSessionTab(existing, tab)
     )
   }
 

@@ -40,13 +40,27 @@ const storeBase = {
   })
 }
 
-function makeSession(): WorkspaceSessionState {
+function makeSession(overrides: Partial<WorkspaceSessionState> = {}): WorkspaceSessionState {
   return {
     activeRepoId: 'repo-1',
     activeWorktreeId: WT_A,
     activeTabId: null,
     tabsByWorktree: {},
-    terminalLayoutsByTabId: {}
+    terminalLayoutsByTabId: {},
+    ...overrides
+  }
+}
+
+function makeTerminalTab(id: string, ptyId: string) {
+  return {
+    id,
+    ptyId,
+    worktreeId: WT_A,
+    title: `Terminal ${id}`,
+    customTitle: null,
+    color: null,
+    sortOrder: 0,
+    createdAt: 1
   }
 }
 
@@ -65,6 +79,9 @@ function createRuntime() {
   })
   const events: RuntimeMobileSessionTabsResult[] = []
   runtime.onMobileSessionTabsChanged((snapshot) => events.push(snapshot))
+  const setSession = (next: WorkspaceSessionState): void => {
+    session = next
+  }
   const sync = (
     mobileSessionTabs: RuntimeMobileSessionTabsSnapshot[],
     unchangedMobileSessionWorktrees?: string[]
@@ -75,7 +92,7 @@ function createRuntime() {
       mobileSessionTabs,
       ...(unchangedMobileSessionWorktrees ? { unchangedMobileSessionWorktrees } : {})
     })
-  return { runtime, events, sync, internals: runtime as unknown as RuntimeInternals }
+  return { runtime, events, sync, setSession, internals: runtime as unknown as RuntimeInternals }
 }
 
 function makeSnapshot(worktree: string, version: number): RuntimeMobileSessionTabsSnapshot {
@@ -161,6 +178,57 @@ describe('graph-sync mobile payload partition', () => {
     expect(internals.mobileSessionTabsByWorktree.get(WT_B)?.tabs).toEqual([
       expect.objectContaining({ parentTabId: 'tab-1' })
     ])
+  })
+
+  it('asks for a republish when headless hydration masks a dropped renderer snapshot', () => {
+    const { sync, setSession, internals } = createRuntime()
+    setSession(
+      makeSession({
+        tabsByWorktree: { [WT_A]: [makeTerminalTab('serve-tab', 'serve-pty-1')] }
+      })
+    )
+    sync([makeSnapshot(WT_A, 1)])
+    internals.mobileSessionTabsByWorktree.delete(WT_A)
+
+    const result = sync([], [WT_A])
+    expect(result.mobileSessionResyncWorktrees).toEqual([WT_A])
+    expect(internals.mobileSessionTabsByWorktree.get(WT_A)?.publicationEpoch).toMatch(
+      /^headless-hydrated:/
+    )
+
+    const resend = sync([makeSnapshot(WT_A, 1)], [])
+    expect(resend.mobileSessionResyncWorktrees).toBeUndefined()
+    expect(
+      internals.mobileSessionTabsByWorktree
+        .get(WT_A)
+        ?.tabs.map((tab) => (tab.type === 'terminal' ? tab.parentTabId : tab.id))
+    ).toEqual(['tab-1', 'serve-tab'])
+  })
+
+  it('requests the accepted revision again to prune a stale preserved tab', () => {
+    const { sync, setSession, internals } = createRuntime()
+    setSession(
+      makeSession({
+        tabsByWorktree: { [WT_A]: [makeTerminalTab('serve-tab', 'serve-pty-1')] }
+      })
+    )
+    sync([makeSnapshot(WT_A, 1)])
+    expect(
+      internals.mobileSessionTabsByWorktree
+        .get(WT_A)
+        ?.tabs.some((tab) => tab.type === 'terminal' && tab.parentTabId === 'serve-tab')
+    ).toBe(true)
+
+    setSession(makeSession())
+    const result = sync([], [WT_A])
+    expect(result.mobileSessionResyncWorktrees).toEqual([WT_A])
+
+    sync([makeSnapshot(WT_A, 1)], [])
+    expect(
+      internals.mobileSessionTabsByWorktree
+        .get(WT_A)
+        ?.tabs.some((tab) => tab.type === 'terminal' && tab.parentTabId === 'serve-tab')
+    ).toBe(false)
   })
 
   it('leaves the legacy full-payload contract untouched when no list is sent', () => {
