@@ -52,7 +52,7 @@ function makeTitleCountingState(worktreeCount: number): {
   state: AppState
   titleReads: () => number
   resetTitleReads: () => void
-  withOneChangedWorktree: () => AppState
+  withOneAgentStatusChanged: () => AppState
 } {
   let titleReads = 0
   const leafIdFor = (index: number): string =>
@@ -77,6 +77,19 @@ function makeTitleCountingState(worktreeCount: number): {
       expandedLeafId: null
     }
   }
+  const changedPaneKey = `title-term-7:${leafIdFor(7)}`
+  const agentStatusByPaneKey: AppState['agentStatusByPaneKey'] = {
+    [changedPaneKey]: {
+      state: 'working',
+      prompt: 'Investigate publication pressure',
+      updatedAt: 1_700_000_000_000,
+      stateStartedAt: 1_699_999_999_000,
+      agentType: 'codex',
+      paneKey: changedPaneKey,
+      terminalTitle: 'codex [working]',
+      stateHistory: []
+    }
+  }
 
   const state = {
     tabsByWorktree,
@@ -91,7 +104,7 @@ function makeTitleCountingState(worktreeCount: number): {
     openFiles: [],
     editorDrafts: {},
     activeTabId: null,
-    agentStatusByPaneKey: {},
+    agentStatusByPaneKey,
     browserTabsByWorktree: {}
   } as unknown as AppState
 
@@ -101,12 +114,16 @@ function makeTitleCountingState(worktreeCount: number): {
     resetTitleReads: () => {
       titleReads = 0
     },
-    withOneChangedWorktree: () =>
+    withOneAgentStatusChanged: () =>
       ({
         ...state,
-        tabsByWorktree: {
-          ...tabsByWorktree,
-          'repo::/title-wt-7': [makeTab(7, 'Agent 7 (done)')]
+        agentStatusByPaneKey: {
+          ...agentStatusByPaneKey,
+          [changedPaneKey]: {
+            ...agentStatusByPaneKey[changedPaneKey],
+            state: 'waiting',
+            updatedAt: 1_700_000_001_000
+          }
         }
       }) as unknown as AppState
   }
@@ -164,18 +181,29 @@ describe('mobile session publication cost', () => {
     expect(titleReads()).toBe(0)
   })
 
-  it('builds content only for the worktree whose inputs changed', () => {
+  it('builds content only for the worktree whose agent status changed', () => {
     const WORKTREES = 300
-    const { state, titleReads, resetTitleReads, withOneChangedWorktree } =
+    const { state, titleReads, resetTitleReads, withOneAgentStatusChanged } =
       makeTitleCountingState(WORKTREES)
 
-    buildMobileSessionTabSnapshots(state)
+    const beforeByWorktree = new Map(
+      buildMobileSessionTabSnapshots(state).map((snapshot) => [snapshot.worktree, snapshot])
+    )
     const fullBuildReads = titleReads()
     resetTitleReads()
 
-    buildMobileSessionTabSnapshots(withOneChangedWorktree())
+    const afterByWorktree = new Map(
+      buildMobileSessionTabSnapshots(withOneAgentStatusChanged()).map((snapshot) => [
+        snapshot.worktree,
+        snapshot
+      ])
+    )
+    const rebuiltWorktrees = [...afterByWorktree]
+      .filter(([worktreeId, snapshot]) => snapshot !== beforeByWorktree.get(worktreeId))
+      .map(([worktreeId]) => worktreeId)
 
     expect(titleReads()).toBeGreaterThan(0)
     expect(titleReads()).toBeLessThan(fullBuildReads / WORKTREES + 1)
+    expect(rebuiltWorktrees).toEqual(['repo::/title-wt-7'])
   })
 })
